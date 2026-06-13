@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}読みと息継ぎ編集 - {{ work.title }} - PEFスタジオ{% endblock %}
+{% block content %}
+  {% set is_editable = work.mode in ["processed", "draft"] %}
+
+  <section class="panel work-header">
+    <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id) }}">← 作品詳細へ戻る</a>
+    <h1>📣 読みと息継ぎ編集</h1>
+    <div class="status-summary">
+      <div class="status-label">状態: {{ work.status_label }}</div>
+      {% if work.mode == "draft" %}
+        <p>途中保存を編集中です。</p>
+      {% elif work.mode == "final_readonly" %}
+        <p>編集完了として確定済みです。</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if work.errors %}
+    <section class="panel warning-panel">
+      <h2>読み込みエラー</h2>
+      {% for error in work.errors %}<p>{{ error }}</p>{% endfor %}
+    </section>
+  {% endif %}
+
+  {% if work.save_errors %}
+    <section class="panel warning-panel">
+      <h2>保存エラー</h2>
+      {% for error in work.save_errors %}<p>{{ error }}</p>{% endfor %}
+    </section>
+  {% endif %}
+
+  {% if work.mode == "final_readonly" or not is_editable %}
+    <section class="panel reading-edit-guidance">
+      {% if work.mode == "final_readonly" %}
+      <p>この作品は確定済みです。</p>
+      <p>修正するには作品詳細から再編集開始を押してください。</p>
+      {% else %}
+      <p>編集用ファイルがまだありません。</p>
+      <p>先に作品詳細から辞書または辞書なしルートで編集用データを作成してください。</p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <details class="panel legend">
+    <summary>？ 記号の見方</summary>
+    <div class="legend-list">
+      {% for key, item in symbol_category_ui.items() %}
+        <div class="legend-item">
+          <span class="legend-sample {{ item.css_class }}">見本</span>
+          <div>
+            <div class="legend-label">{{ item.label }}</div>
+            <div class="legend-description">{{ item.description }}</div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </details>
+
+  <section class="segments">
+    {% if work.segment_total %}
+      <div class="panel pagination-panel">
+        {% if is_editable and work.segments %}
+          <div class="pagination-action-row">
+            <div class="draft-actions">
+              <button class="primary-button" form="segment-edit-form" type="submit">途中保存</button>
+              <button class="secondary-button" form="segment-edit-form" type="submit" formaction="{{ url_for('save_final', work_id=work.work_id) }}">編集確定</button>
+              <span class="form-help">編集を確定すると、EPUB生成に進めます。</span>
+            </div>
+          </div>
+        {% endif %}
+        <div class="pagination-controls">
+          <form class="pagination-form" method="get" action="{{ url_for('reading_edit', work_id=work.work_id) }}">
+            {% if work.mode == "final_readonly" %}<input type="hidden" name="view" value="final">{% endif %}
+            <label for="per_page">表示件数</label>
+            <select id="per_page" name="per_page" {% if is_editable and work.segments %}form="segment-edit-form"{% endif %}>
+              {% for option in work.pagination.per_page_options %}
+                <option value="{{ option }}" {% if option == work.pagination.per_page %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+            <input type="hidden" name="page" value="1">
+            {% if is_editable and work.segments %}
+              <button class="secondary-button" form="segment-edit-form" type="submit" name="target_page" value="1">変更</button>
+            {% else %}
+              <button class="secondary-button" type="submit">変更</button>
+            {% endif %}
+          </form>
+          <div class="pagination-status">
+            {{ work.pagination.start }}-{{ work.pagination.end }} / {{ work.pagination.total }}
+          </div>
+          <div class="pagination-links">
+            {% if work.pagination.has_prev %}
+              {% if is_editable and work.segments %}
+                <button class="button" form="segment-edit-form" type="submit" name="target_page" value="{{ work.pagination.prev_page }}">前へ</button>
+              {% elif work.mode == "final_readonly" %}
+                <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, view='final', page=work.pagination.prev_page, per_page=work.pagination.per_page) }}">前へ</a>
+              {% else %}
+                <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, page=work.pagination.prev_page, per_page=work.pagination.per_page) }}">前へ</a>
+              {% endif %}
+            {% else %}
+              <span class="button disabled-button">前へ</span>
+            {% endif %}
+            <span class="page-count">{{ work.pagination.page }} / {{ work.pagination.total_pages }}</span>
+            {% if work.pagination.has_next %}
+              {% if is_editable and work.segments %}
+                <button class="button" form="segment-edit-form" type="submit" name="target_page" value="{{ work.pagination.next_page }}">次へ</button>
+              {% elif work.mode == "final_readonly" %}
+                <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, view='final', page=work.pagination.next_page, per_page=work.pagination.per_page) }}">次へ</a>
+              {% else %}
+                <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, page=work.pagination.next_page, per_page=work.pagination.per_page) }}">次へ</a>
+              {% endif %}
+            {% else %}
+              <span class="button disabled-button">次へ</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if work.segments %}
+      {% if is_editable %}
+        <form id="segment-edit-form" class="draft-form" method="post" action="{{ url_for('save_draft', work_id=work.work_id) }}">
+          <input type="hidden" name="page" value="{{ work.pagination.page }}">
+          <input type="hidden" name="per_page" value="{{ work.pagination.per_page }}">
+      {% endif %}
+        {% for segment in work.segments %}
+          <article class="segment-card">
+            <div class="segment-index">No. {{ loop.index + work.pagination.start - 1 }}</div>
+            <div class="segment-display"><span class="field-label">本文</span>{{ segment.display }}</div>
+            {% if is_editable %}
+              <label class="audio-edit-label" for="audio_edit_{{ segment.index }}">読み上げ用テキスト</label>
+              <textarea class="audio-edit-textarea" id="audio_edit_{{ segment.index }}" name="audio_edit_{{ segment.index }}" rows="3">{{ segment.audio_edit_text }}</textarea>
+              {% if segment.save_error %}
+                <p class="segment-save-error">{{ segment.save_error }}</p>
+              {% endif %}
+            {% elif work.mode == "final_readonly" %}
+              <label class="audio-edit-label" for="audio_edit_{{ segment.index }}">読み上げ内容</label>
+              <textarea class="audio-edit-textarea" id="audio_edit_{{ segment.index }}" rows="3" readonly>{{ segment.audio_edit_text }}</textarea>
+            {% endif %}
+            <div class="audio-preview" aria-label="audio表示">
+              {% for span in segment.audio_spans %}
+                {% if span.kind == "symbol" %}
+                  <span class="audio-span sym-{{ span.category }}">{{ span.text }}</span>
+                {% elif span.kind == "reading_annotation" %}
+                  <span class="audio-span reading-annotation">{{ span.text }}</span>
+                {% else %}
+                  <span class="audio-span text-span">{{ span.text }}</span>
+                {% endif %}
+              {% endfor %}
+            </div>
+          </article>
+        {% endfor %}
+      {% if work.segment_total %}
+        <div class="panel pagination-panel pagination-panel-bottom">
+          {% if is_editable %}
+            <div class="pagination-action-row">
+              <div class="draft-actions">
+                <button class="primary-button" type="submit">途中保存</button>
+                <button class="secondary-button" type="submit" formaction="{{ url_for('save_final', work_id=work.work_id) }}">編集確定</button>
+                <span class="form-help">編集を確定すると、EPUB生成に進めます。</span>
+              </div>
+            </div>
+          {% endif %}
+          <div class="pagination-controls">
+            <div></div>
+            <div class="pagination-status">
+              {{ work.pagination.start }}-{{ work.pagination.end }} / {{ work.pagination.total }}
+            </div>
+            <div class="pagination-links">
+              {% if work.pagination.has_prev %}
+                {% if is_editable %}
+                  <button class="button" form="segment-edit-form" type="submit" name="target_page" value="{{ work.pagination.prev_page }}">前へ</button>
+                {% elif work.mode == "final_readonly" %}
+                  <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, view='final', page=work.pagination.prev_page, per_page=work.pagination.per_page) }}">前へ</a>
+                {% else %}
+                  <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, page=work.pagination.prev_page, per_page=work.pagination.per_page) }}">前へ</a>
+                {% endif %}
+              {% else %}
+                <span class="button disabled-button">前へ</span>
+              {% endif %}
+              <span class="page-count">{{ work.pagination.page }} / {{ work.pagination.total_pages }}</span>
+              {% if work.pagination.has_next %}
+                {% if is_editable %}
+                  <button class="button" form="segment-edit-form" type="submit" name="target_page" value="{{ work.pagination.next_page }}">次へ</button>
+                {% elif work.mode == "final_readonly" %}
+                  <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, view='final', page=work.pagination.next_page, per_page=work.pagination.per_page) }}">次へ</a>
+                {% else %}
+                  <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id, page=work.pagination.next_page, per_page=work.pagination.per_page) }}">次へ</a>
+                {% endif %}
+              {% else %}
+                <span class="button disabled-button">次へ</span>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+      {% if is_editable %}
+        </form>
+      {% endif %}
+    {% else %}
+      <section class="panel">
+        <p class="empty">表示できる本文segmentがありません。</p>
+      </section>
+    {% endif %}
+  </section>
+{% endblock %}

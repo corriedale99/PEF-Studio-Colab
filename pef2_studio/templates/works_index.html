@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}作品一覧 - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <div class="section-header">
+      <h1>作品一覧</h1>
+      <div class="generation-actions">
+        <a class="button" href="{{ url_for('import_text_form') }}">テキスト原稿を取り込む</a>
+        <a class="button" href="{{ url_for('import_legacy_pef_form') }}">旧PEF原稿を取り込む</a>
+      </div>
+    </div>
+    {% if delete_notice %}
+      <div class="notice success-panel">{{ delete_notice.message }}</div>
+    {% endif %}
+    <form class="sort-form" method="get" action="{{ url_for('works_index') }}">
+      <label for="sort">並び順</label>
+      <select id="sort" name="sort">
+        {% for value, label in sort_options.items() %}
+          <option value="{{ value }}"{% if value == selected_sort %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button class="button action-button" type="submit">並び替え</button>
+    </form>
+    {% if works %}
+      <table class="works-table">
+        <thead>
+          <tr>
+            <th>作品名</th>
+            <th>作成日時</th>
+            <th>更新日時</th>
+            <th>状態</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for work in works %}
+            <tr>
+              <td class="work-title">{{ work.title }}</td>
+              <td>{{ work.created_at_label }}</td>
+              <td>{{ work.updated_at_label }}</td>
+              <td>
+                <span class="status">{{ work.status_label }}</span>
+                {% if not work.has_meta %}<span class="meta-warning">metaなし</span>{% endif %}
+              </td>
+              <td>
+                <a class="button" href="{{ url_for('work_detail', work_id=work.work_id) }}">開く</a>
+                <a class="button" href="{{ url_for('confirm_delete_work', work_id=work.work_id, sort=selected_sort) }}">削除</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">表示できる作品がありません。</p>
+    {% endif %}
+  </section>
+
+  <section id="workspace-settings" class="panel workspace-settings-card">
+    <div class="card-heading">
+      <h2>全体設定</h2>
+      <span class="status-pill {% if workspace_tts_settings.has_workspace_settings %}status-done{% else %}status-pending{% endif %}">{% if workspace_tts_settings.has_workspace_settings %}保存済み{% else %}標準設定{% endif %}</span>
+    </div>
+    <p>新しく作る作品や、作品別設定がない作品に使われる標準設定です。</p>
+    {% if workspace_settings_result %}
+      <div class="notice {% if workspace_settings_result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">{{ workspace_settings_result.message }}</div>
+    {% endif %}
+    <form class="inline-form" method="post" action="{{ url_for('save_workspace_tts_settings') }}#workspace-settings">
+      {% set workspace_speaker_id = workspace_voice_preview_result.speaker_id if workspace_voice_preview_result is defined and workspace_voice_preview_result and workspace_voice_preview_result.speaker_id is not none else workspace_tts_settings.speaker_id %}
+      <input type="hidden" name="sort" value="{{ selected_sort }}">
+      <div class="settings-category">
+        <h3>🔈 声のキャラ</h3>
+        <p>めたん（2） / ずんだもん（3） / つむぎ（8） / 青山龍星（13）</p>
+        <div class="voice-preview-controls">
+          <label class="text-field speaker-id-field">
+            <span>声のキャラID</span>
+            <input type="number" name="speaker_id" min="0" step="1" value="{{ workspace_speaker_id }}">
+          </label>
+          <button class="secondary-button" type="submit" formaction="{{ url_for('generate_workspace_voice_preview') }}#workspace-settings">試聴する</button>
+        </div>
+        {% if workspace_voice_preview_result is defined and workspace_voice_preview_result %}
+          <div class="notice {% if workspace_voice_preview_result.ok %}success-panel{% else %}warning-panel{% endif %}">{{ workspace_voice_preview_result.message }}</div>
+        {% endif %}
+        {% if workspace_tts_settings.has_voice_preview %}
+          <div class="voice-preview-playback">
+            <span>視聴音声を再生する</span>
+            <audio controls src="{{ url_for('workspace_voice_preview_audio', v=workspace_tts_settings.voice_preview_version) }}"></audio>
+          </div>
+        {% endif %}
+      </div>
+      <div class="settings-category">
+        <h3>😮‍💨 息継ぎパラメータ</h3>
+        <p>次の息継ぎまでの文字数（軽い助詞などで息を吸う目安）標準 20</p>
+        <label class="slider-field">
+          <span>目安の文字数</span>
+          <div class="range-row">
+            <input type="range" name="choking_threshold" min="5" max="80" step="1" value="{{ workspace_tts_settings.choking_threshold }}" oninput="this.nextElementSibling.value = this.value">
+            <output>{{ workspace_tts_settings.choking_threshold }}</output>
+          </div>
+        </label>
+        <p>文末の保護（「です。」などの直前で切らない距離）標準 6</p>
+        <label class="slider-field">
+          <span>文末保護文字数</span>
+          <div class="range-row">
+            <input type="range" name="distance_threshold" min="0" max="30" step="1" value="{{ workspace_tts_settings.distance_threshold }}" oninput="this.nextElementSibling.value = this.value">
+            <output>{{ workspace_tts_settings.distance_threshold }}</output>
+          </div>
+        </label>
+      </div>
+      <div class="form-actions">
+        <button class="secondary-button" type="submit">全体設定を保存する</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

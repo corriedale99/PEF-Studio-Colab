@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}テキスト原稿を取り込む - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>テキスト原稿を取り込む</h1>
+    <p class="form-help">.txt 原稿から新しい作品を作成します。</p>
+    <p class="form-help">旧PEF processed json は不要です。</p>
+
+    {% if errors %}
+      <section class="warning-panel import-errors">
+        <h2>テキスト原稿を取り込めませんでした。</h2>
+        {% for error in errors %}<p>{{ error }}</p>{% endfor %}
+      </section>
+    {% endif %}
+
+    <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_text') }}">
+      <label class="file-field">
+        <span>作品名</span>
+        <input type="text" name="title" value="{{ form_data.title }}">
+      </label>
+      <label class="file-field">
+        <span>txt ファイル</span>
+        <input type="file" name="source_txt" accept=".txt,text/plain">
+      </label>
+      <div class="form-actions">
+        <button class="primary-button" type="submit">取り込む</button>
+        <a class="secondary-button" href="{{ url_for('works_index') }}">一覧へ戻る</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

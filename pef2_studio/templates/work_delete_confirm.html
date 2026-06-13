@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}作品削除 - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>作品を削除しますか？</h1>
+    <p class="form-help">この作品を作品一覧から削除します。<br>作品データは退避フォルダへ移動されます。</p>
+    {% if result and result.status == "failed" %}
+      <div class="notice warning-panel">
+        <p>{{ result.message }}</p>
+        {% if result.error %}
+          <details class="debug-info">
+            <summary>開発者向け詳細</summary>
+            <p>{{ result.error }}</p>
+          </details>
+        {% endif %}
+      </div>
+    {% endif %}
+    <dl class="meta-grid delete-confirm-meta">
+      <div>
+        <dt>作品名</dt>
+        <dd>{{ work.title }}</dd>
+      </div>
+      <div>
+        <dt>作成日時</dt>
+        <dd>{{ work.created_at }}</dd>
+      </div>
+      <div>
+        <dt>更新日時</dt>
+        <dd>{{ work.updated_at }}</dd>
+      </div>
+    </dl>
+    <div class="form-actions">
+      <form method="post" action="{{ url_for('delete_work', work_id=work.work_id) }}">
+        <input type="hidden" name="sort" value="{{ selected_sort }}">
+        <button class="button action-button danger-button" type="submit">削除する</button>
+      </form>
+      <a class="button cancel-button" href="{{ url_for('works_index', sort=selected_sort) }}">削除しない</a>
+    </div>
+  </section>
+{% endblock %}

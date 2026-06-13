@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}画像指定 - {{ page.title }} - PEFスタジオ{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url_for('work_detail', work_id=page.work_id) }}">← 作品詳細へ戻る</a>
+
+  <section class="panel">
+    <h1>🖼️ 画像指定</h1>
+    <p class="edit-help">本文内の画像指定に対応する画像ファイルをアップロードします。</p>
+    <p class="edit-help">画像はEPUBに入りますが、読み上げ本文としては読まれません。</p>
+  </section>
+
+  {% if page.result %}
+    <section class="panel {% if page.result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
+      <p>{{ page.result.message }}</p>
+    </section>
+  {% endif %}
+
+  <section class="panel">
+    <div class="card-heading">
+      <h2>画像</h2>
+      <span class="status-pill {% if page.image_summary.missing_count == 0 and page.image_summary.count > 0 %}status-done{% else %}status-pending{% endif %}">{{ page.image_summary.count }}件</span>
+    </div>
+    {% if page.image_summary.errors %}
+      <ul class="result-list">
+        {% for error in page.image_summary.errors %}<li>{{ error }}</li>{% endfor %}
+      </ul>
+    {% elif not page.image_summary.has_images %}
+      <p class="empty">この作品には画像指定がありません。</p>
+    {% else %}
+      <dl class="hub-summary-list image-summary-list">
+        <div><dt>画像指定</dt><dd>{{ page.image_summary.count }}件</dd></div>
+        <div><dt>未アップロード</dt><dd>{{ page.image_summary.missing_count }}件</dd></div>
+        <div><dt>アップロード済み</dt><dd>{{ page.image_summary.uploaded_count }}件</dd></div>
+      </dl>
+      <div class="image-segment-list">
+        {% for image in page.image_summary["items"] %}
+          <section class="image-segment-item" id="image-{{ image.index }}">
+            <div class="card-heading">
+              <h3>画像 {{ loop.index }}</h3>
+              <span class="status-pill {% if image.exists %}status-done{% else %}status-pending{% endif %}">{{ image.status_label }}</span>
+            </div>
+            <dl class="meta-grid">
+              <div><dt>index</dt><dd>{{ image.index }}</dd></div>
+              <div><dt>指定ファイル</dt><dd>{{ image.image_file }}</dd></div>
+              <div><dt>状態</dt><dd>{% if image.exists %}アップロード済み{% elif image.is_safe %}未アップロード{% else %}画像ファイルが見つかりません{% endif %}</dd></div>
+            </dl>
+            {% if image.exists %}
+              <div class="image-preview-block">
+                <img class="image-preview" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.index) }}" alt="画像プレビュー">
+              </div>
+            {% endif %}
+            {% if image.is_safe %}
+              <form class="import-form image-upload-form" method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_image', work_id=page.work_id, segment_index=image.index) }}#image-{{ image.index }}">
+                <label class="file-field">
+                  <span>画像ファイル（PNG / JPEG）</span>
+                  <input type="file" name="image_upload" accept=".png,.jpg,.jpeg,image/png,image/jpeg">
+                </label>
+                <div class="form-actions">
+                  <button class="secondary-button" type="submit">{% if image.exists %}差し替える{% else %}アップロード{% endif %}</button>
+                </div>
+              </form>
+            {% else %}
+              <p class="action-note">画像の保存先を確認してください。</p>
+            {% endif %}
+          </section>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

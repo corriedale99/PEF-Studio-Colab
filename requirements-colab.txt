@@ -1,0 +1,6 @@
+flask
+budoux
+google-generativeai
+python-dotenv
+sudachidict_core
+sudachipy

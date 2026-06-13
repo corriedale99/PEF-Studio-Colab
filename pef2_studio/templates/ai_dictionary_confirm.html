@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}AI辞書候補作成 - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>AIで辞書候補を作りますか？</h1>
+    <p>本文から読み間違えやすい語を抽出し、AIで読み候補を作ります。</p>
+    <p>候補は、「辞書編集画面」で確認できます。</p>
+    <p>＊ 既存の辞書は上書きされますので注意してください。</p>
+    <p>＊ AI使用に0〜数円程度の費用が発生することがあります。</p>
+    {% if confirm.has_dictionary_review %}
+      <p class="action-note">現在の辞書候補は退避され、新しいAI辞書候補に置き換わります。</p>
+    {% endif %}
+    <p class="form-help">この操作ではGemini APIを使って読み候補を作成します。<br>無料枠の範囲でも、API使用量は発生します。</p>
+    <div class="form-actions">
+      <form method="post" action="{{ url_for('create_ai_dictionary_review', work_id=confirm.work_id) }}">
+        <button class="secondary-button" type="submit">AIで辞書候補を作る</button>
+      </form>
+      <a class="button cancel-button" href="{{ url_for('work_detail', work_id=confirm.work_id) }}">キャンセル</a>
+    </div>
+  </section>
+{% endblock %}

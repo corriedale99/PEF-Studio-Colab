@@ -1,0 +1,564 @@
+{% extends "base.html" %}
+{% block title %}{{ work.title }} - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel work-header">
+    <h1>{{ work.title }}</h1>
+    <div class="status-summary">
+      <div class="status-label">状態: {{ work.status_label }}</div>
+      {% if work.has_draft %}
+        <p>途中保存があります。編集を続ける場合は「途中保存を開く」を押してください。</p>
+      {% elif work.mode == "processed" %}
+        <p>読みと息継ぎの編集に進めます。</p>
+      {% elif work.mode == "final_readonly" and work.can_download_epub %}
+        <p>EPUBは作成済みです。修正する場合は「再編集する」を押してください。</p>
+      {% elif work.mode == "final_readonly" %}
+        <p>原稿は確定済みです。EPUBを作成できます。</p>
+      {% else %}
+        <p>{{ work.status_description }}</p>
+      {% endif %}
+    </div>
+    <div class="workflow-steps workflow-breadcrumb" aria-label="処理の流れ">
+      {% for step in work.workflow_steps %}
+        <span class="workflow-step workflow-breadcrumb-step workflow-{{ step.state }}">{% if step.marker %}<span class="workflow-marker">{{ step.marker }}</span>{% endif %}{{ step.label }}</span>
+      {% endfor %}
+    </div>
+    <details class="debug-info">
+      <summary>詳細情報</summary>
+      <div class="detail-block">
+        <div class="detail-title">現状</div>
+        <dl class="meta-grid">
+          <div><dt>work_id</dt><dd>{{ work.work_id }}</dd></div>
+          <div><dt>meta.status</dt><dd>{{ work.status }}</dd></div>
+          <div><dt>import_type</dt><dd>{{ work.import_type }}</dd></div>
+          <div><dt>source_format</dt><dd>{{ work.source_format }}</dd></div>
+          <div><dt>input_stem</dt><dd>{{ work.input_stem }}</dd></div>
+          <div><dt>mode</dt><dd>{{ work.mode }}</dd></div>
+          <div><dt>opened_file</dt><dd>{{ work.opened_file }}</dd></div>
+        </dl>
+      </div>
+      <div class="detail-block">
+        <div class="detail-title">内部ファイル状態</div>
+        <dl class="meta-grid">
+          <div><dt>00_pre_processed.json</dt><dd>{% if work.has_pre_processed %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>legacy_dictionary</dt><dd>{% if work.has_legacy_dictionary %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>dictionary_review</dt><dd>{% if work.has_dictionary_review %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>dictionary_review_items</dt><dd>{{ work.dictionary_review_items }}</dd></div>
+          <div><dt>dictionary_review_source</dt><dd>{{ work.dictionary_review_source }}</dd></div>
+          <div><dt>02_processed.json</dt><dd>{% if work.has_processed %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>03_processed_draft.json</dt><dd>{% if work.has_draft %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>04_processed_final.json</dt><dd>{% if work.has_final %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>audio</dt><dd>{% if work.has_audio %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>epub</dt><dd>{% if work.has_epub %}exists{% else %}none{% endif %}</dd></div>
+          <div><dt>workspace</dt><dd>{{ workspace_root }}</dd></div>
+        </dl>
+      </div>
+      <div class="detail-block">
+        <div class="detail-title">エラー情報</div>
+        {% if work.errors %}
+          <ul class="result-list">
+            {% for error in work.errors %}<li>{{ error }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          <p class="empty">読み込みエラーはありません。</p>
+        {% endif %}
+        {% if work.symbol_rule_warnings %}
+          <div class="debug-warning-block">
+            <div class="debug-warning-title">記号ルール警告</div>
+            <ul>
+              {% for warning in work.symbol_rule_warnings %}<li>{{ warning }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+      </div>
+      {% if work.gemini_review_debug.exists %}
+        <div class="detail-block">
+          <div class="detail-title">Gemini辞書候補</div>
+          <dl class="meta-grid">
+            <div><dt>gemini_api_called</dt><dd>{{ work.gemini_review_debug.api_called }}</dd></div>
+            <div><dt>skipped</dt><dd>{{ work.gemini_review_debug.skipped }}</dd></div>
+            <div><dt>model</dt><dd>{{ work.gemini_review_debug.model }}</dd></div>
+            <div><dt>candidate_count</dt><dd>{{ work.gemini_review_debug.candidate_count }}</dd></div>
+            <div><dt>chunk_size</dt><dd>{{ work.gemini_review_debug.chunk_size }}</dd></div>
+            <div><dt>failed_count</dt><dd>{{ work.gemini_review_debug.failed_count }}</dd></div>
+            <div><dt>timeout_count</dt><dd>{{ work.gemini_review_debug.timeout_count }}</dd></div>
+            <div><dt>raw_error_responses</dt><dd>{{ work.gemini_review_debug.raw_error_response_count }}</dd></div>
+            <div><dt>raw_path</dt><dd>{{ work.gemini_review_debug.raw_path }}</dd></div>
+          </dl>
+          {% if not work.gemini_review_debug.readable %}
+            <p class="empty">gemini_review_raw.json を読み込めません。</p>
+          {% elif work.gemini_review_debug.failed_chunks %}
+            <ul class="result-list">
+              {% for chunk in work.gemini_review_debug.failed_chunks %}
+                <li>chunk {{ chunk.chunk_index }}: {{ chunk.status }} / attempts={{ chunk.attempts }} / {{ chunk.error_type }}{% if chunk.message %}: {{ chunk.message }}{% endif %}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endif %}
+    </details>
+  </section>
+
+  {% if dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.title %}
+    <section class="panel {% if dictionary_import_result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
+      <h2>{{ dictionary_import_result.title or "処理結果" }}</h2>
+      {% if dictionary_import_result.message %}<p>{{ dictionary_import_result.message }}</p>{% endif %}
+      {% for error in dictionary_import_result.errors %}<p>{{ error }}</p>{% endfor %}
+      {% if dictionary_import_result.warnings %}
+        <ul class="result-list">
+          {% for warning in dictionary_import_result.warnings %}<li>{{ warning.message }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+      {% if dictionary_import_result.status != 'success' and (dictionary_import_result.error_type or dictionary_import_result.error_message or dictionary_import_result.failed_stage) %}
+        <details class="debug-info generation-debug">
+          <summary>詳細情報</summary>
+          <dl class="meta-grid">
+            {% if dictionary_import_result.failed_stage %}<div><dt>failed_stage</dt><dd>{{ dictionary_import_result.failed_stage }}</dd></div>{% endif %}
+            {% if dictionary_import_result.error_type %}<div><dt>error_type</dt><dd>{{ dictionary_import_result.error_type }}</dd></div>{% endif %}
+            {% if dictionary_import_result.error_message %}<div><dt>error_message</dt><dd>{{ dictionary_import_result.error_message }}</dd></div>{% endif %}
+            {% if dictionary_import_result.affected_file %}<div><dt>affected_file</dt><dd>{{ dictionary_import_result.affected_file }}</dd></div>{% endif %}
+          </dl>
+        </details>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% if tts_settings_result is defined and tts_settings_result %}
+    <section class="panel {% if tts_settings_result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
+      <h2>音声設定</h2>
+      <p>{{ tts_settings_result.message }}</p>
+    </section>
+  {% endif %}
+
+  {% set is_editable = work.mode in ["processed", "draft"] %}
+  <section class="hub-grid" aria-label="作品ハブ">
+    <section class="panel hub-card manuscript-card">
+      <div class="card-heading">
+        <h2>🖊️ 原稿</h2>
+        <span class="status-pill status-done">{% if work.has_pre_processed %}済み{% else %}未完了{% endif %}</span>
+      </div>
+      <p>原稿は{% if work.has_pre_processed %}取り込み済み{% else %}まだ取り込まれていません{% endif %}です。</p>
+      <dl class="hub-summary-list">
+        <div><dt>作品名</dt><dd>{{ work.title }}</dd></div>
+        <div><dt>work_id</dt><dd class="work-id">{{ work.work_id }}</dd></div>
+        <div><dt>取込種別</dt><dd>{{ work.import_type_label }}</dd></div>
+        <div><dt>原稿取込状態</dt><dd>{{ work.status_label }}</dd></div>
+      </dl>
+      <div class="generation-actions">
+        <a class="button" href="{{ url_for('works_index') }}">作品一覧へ戻る</a>
+      </div>
+      <p class="action-note">v1.1-5では、原稿再取込や原稿差し替えは行いません。</p>
+    </section>
+
+    <section class="panel hub-card dictionary-card">
+      <div class="card-heading">
+        <h2>📚 辞書</h2>
+        {% if work.has_dictionary_review or work.has_processed %}
+          <span class="status-pill status-done">済み</span>
+        {% elif work.can_create_empty_dictionary_processed or work.can_import_legacy_dictionary %}
+          <span class="status-pill status-current">未完了</span>
+        {% else %}
+          <span class="status-pill status-pending">未完了</span>
+        {% endif %}
+      </div>
+      {% if work.has_draft or work.has_final %}
+        <p>読みと息継ぎの編集結果があります。</p>
+        <p>すでに「読みと息継ぎの編集」をした場合は、再編集できません。</p>
+      {% elif work.has_processed %}
+        <p>編集用データは作成済みです。</p>
+        <p>読みと息継ぎの修正へ進めます。</p>
+      {% elif work.has_dictionary_review or work.can_open_dictionary_review %}
+        <p>辞書確認用データがあります。</p>
+        <p>読みを確認・修正する場合は、辞書編集へ進んでください。</p>
+      {% else %}
+        <p>辞書はまだ作成されていません。</p>
+        <p>必要に応じて、以下の方法から選んでください。</p>
+      {% endif %}
+
+      <div class="dictionary-options">
+        <div class="dictionary-option">
+          {% if work.can_create_empty_dictionary_processed %}
+            <form class="inline-form" method="post" action="{{ url_for('create_empty_dictionary_processed', work_id=work.work_id) }}">
+              <button class="secondary-button" type="submit">辞書を使わずに編集用データを作成</button>
+            </form>
+          {% else %}
+            <span class="button disabled-button">辞書を使わずに編集用データを作成</span>
+          {% endif %}
+          <p>辞書を使わずに編集用データを作成して、「読みと息継ぎの編集」に進みます。</p>
+        </div>
+
+        <div class="dictionary-option">
+          <div class="option-title">作品辞書ファイルを読み込む</div>
+          {% if work.can_reset_dictionary_file %}
+            <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}" onsubmit="return confirm('現在の辞書確認用データと編集用データを退避して、新しい辞書ファイルから作り直します。続けますか？');">
+              <label class="file-field">
+                <span>作品辞書ファイル（.json）</span>
+                <input type="file" name="source_dictionary" accept=".json,application/json">
+              </label>
+              <div class="form-actions">
+                <button class="secondary-button" type="submit">別の作品辞書ファイルを読み込む</button>
+              </div>
+            </form>
+          {% elif work.can_import_dictionary_file %}
+            <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}">
+              <label class="file-field">
+                <span>作品辞書ファイル（.json）</span>
+                <input type="file" name="source_dictionary" accept=".json,application/json">
+              </label>
+              <div class="form-actions">
+                <button class="secondary-button" type="submit">作品辞書を読み込む</button>
+              </div>
+            </form>
+          {% else %}
+            <button class="secondary-button" type="button" disabled>作品辞書を読み込む</button>
+          {% endif %}
+          <p>以前作った作品辞書ファイルを読み込んで、今回の作品の辞書候補にします。</p>
+          <p>旧PEFの辞書ファイルも読み込めます。</p>
+          {% if work.dictionary_file_import_block_reason %}
+            <p class="action-note">{{ work.dictionary_file_import_block_reason }}</p>
+          {% endif %}
+          {% if dictionary_import_result is defined and dictionary_import_result and not dictionary_import_result.title %}
+            {% for error in dictionary_import_result.errors %}<p class="action-note">{{ error }}</p>{% endfor %}
+          {% endif %}
+        </div>
+
+        <div class="dictionary-option">
+          {% if work.can_create_ai_dictionary_review %}
+            <form class="inline-form" method="get" action="{{ url_for('confirm_ai_dictionary_review', work_id=work.work_id) }}">
+              <button class="secondary-button" type="submit">AIで辞書候補を作る</button>
+            </form>
+          {% else %}
+            <button class="secondary-button" type="button" disabled>AIで辞書候補を作る</button>
+          {% endif %}
+          <p>本文から読み間違えやすい語を抽出し、AIで読み候補を作ります。</p>
+          <p>候補は、「辞書編集画面」で確認できます。</p>
+          <p>＊ 既存の辞書は上書きされますので注意してください。</p>
+          <p>＊ AI使用に0〜数円程度の費用が発生することがあります。</p>
+        </div>
+
+        <div class="dictionary-option">
+          {% if work.can_open_dictionary_review and not work.has_draft and not work.has_final %}
+            <a class="secondary-button" href="{{ url_for('dictionary_review', work_id=work.work_id) }}">辞書を編集する</a>
+          {% elif work.can_create_manual_dictionary_review %}
+            <form class="inline-form" method="post" action="{{ url_for('create_manual_dictionary_review', work_id=work.work_id) }}">
+              <button class="secondary-button" type="submit">辞書を編集する</button>
+            </form>
+          {% else %}
+            <button class="secondary-button" type="button" disabled>辞書を編集する</button>
+            {% if not work.can_open_dictionary_review %}<span class="future-label">今後対応</span>{% endif %}
+          {% endif %}
+          <p>作品辞書を確認・編集します。ない場合は新しく作ります。すでに「読みと息継ぎの編集」をした場合は、再編集できません。</p>
+          {% if work.can_direct_finalize_dictionary %}
+            {% if work.has_dictionary_review_items %}
+              <p>読み込んだ辞書をそのまま使う場合は、辞書編集画面を開かずに編集用データを作成できます。</p>
+              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}">
+                <button class="secondary-button" type="submit">この辞書で編集用データを作成</button>
+              </form>
+            {% else %}
+              <p>辞書項目はありません。このまま編集用データを作成します。</p>
+              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}">
+                <button class="secondary-button" type="submit">この辞書で編集用データを作成</button>
+              </form>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+
+    </section>
+
+    <section class="panel hub-card reading-edit-card">
+      <div class="card-heading">
+        <h2>📣 読みと息継ぎ編集</h2>
+        {% if work.has_draft %}
+          <span class="status-pill status-current">編集中</span>
+        {% elif work.has_final %}
+          <span class="status-pill status-done">この作品は編集済みです</span>
+        {% elif is_editable %}
+          <span class="status-pill status-current">編集できます</span>
+        {% else %}
+          <span class="status-pill status-pending">未完了</span>
+        {% endif %}
+      </div>
+      {% if work.mode == "final_readonly" %}
+        <p>読み方や、文中の息継ぎ位置を再編集します。</p>
+        {% if work.has_draft %}
+          <p>途中保存があります。</p>
+          <p>続けると、現在の途中保存を確定版で上書きします。</p>
+          <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}">
+            <input type="hidden" name="confirm" value="1">
+            <button class="secondary-button" type="submit">再編集する</button>
+          </form>
+        {% else %}
+          <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}">
+            <button class="secondary-button" type="submit">再編集する</button>
+          </form>
+        {% endif %}
+      {% elif is_editable %}
+        {% if work.has_draft %}
+          <p>途中保存した内容を編集します。</p>
+        {% else %}
+          <p>読み方や、文中の息継ぎ位置を編集します。</p>
+        {% endif %}
+        {% if work.can_enter_audio_edit %}
+          <div class="generation-actions">
+            {% if work.has_draft %}
+              <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">途中保存を開く</a>
+            {% else %}
+              <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">編集する</a>
+            {% endif %}
+          </div>
+        {% endif %}
+      {% else %}
+        <div class="generation-actions">
+          <span class="button disabled-button">読みと息継ぎ編集へ進む</span>
+        </div>
+        <p class="action-note">先に辞書または辞書なしルートで編集用データを作成してください。</p>
+      {% endif %}
+    </section>
+
+    <section class="panel hub-card image-card">
+      <div class="card-heading">
+        <h2>画像</h2>
+        {% if work.image_summary.has_images and work.image_summary.missing_count == 0 %}
+          <span class="status-pill status-done">済み</span>
+        {% elif work.image_summary.has_images %}
+          <span class="status-pill status-current">未完了</span>
+        {% else %}
+          <span class="status-pill status-pending">指定なし</span>
+        {% endif %}
+      </div>
+      <p>本文内の画像指定に対応する画像ファイルをアップロードします。</p>
+      <p>画像はEPUBに入りますが、読み上げ本文としては読まれません。</p>
+      {% if work.image_summary.errors %}
+        <ul class="result-list">
+          {% for error in work.image_summary.errors %}<li>{{ error }}</li>{% endfor %}
+        </ul>
+      {% elif not work.image_summary.has_images %}
+        <p>この作品には画像指定がありません。</p>
+      {% else %}
+        <dl class="hub-summary-list">
+          <div><dt>画像指定</dt><dd>{{ work.image_summary.count }}件</dd></div>
+          <div><dt>未アップロード</dt><dd>{{ work.image_summary.missing_count }}件</dd></div>
+          <div><dt>アップロード済み</dt><dd>{{ work.image_summary.uploaded_count }}件</dd></div>
+        </dl>
+        <div class="generation-actions">
+          <a class="button" href="{{ url_for('work_images', work_id=work.work_id) }}">画像を確認・アップロードする</a>
+        </div>
+        {% if work.image_summary.epub_needs_regeneration %}
+          <p class="action-note">画像を保存しました。変更をEPUBに反映するには、EPUB生成をやり直してください。</p>
+        {% endif %}
+      {% endif %}
+    </section>
+
+    <section id="voice-settings" class="panel hub-card voice-settings-card">
+      <div class="card-heading">
+        <h2>音声設定</h2>
+        <span class="status-pill {% if work.tts_settings.has_work_settings %}status-done{% else %}status-pending{% endif %}">{{ work.tts_settings.source_label }}</span>
+      </div>
+      <p>この作品で使う読み上げ音声を設定します。</p>
+      <form class="inline-form" method="post" action="{{ url_for('save_tts_settings', work_id=work.work_id) }}#voice-settings">
+        {% set work_speaker_id = voice_preview_result.speaker_id if voice_preview_result is defined and voice_preview_result and voice_preview_result.speaker_id is not none else work.tts_settings.speaker_id %}
+        <div class="settings-category">
+          <h3>🔈 声のキャラ</h3>
+          <p>めたん（2） / ずんだもん（3） / つむぎ（8） / 青山龍星（13）</p>
+          <div class="voice-preview-controls">
+            <label class="text-field speaker-id-field">
+              <span>声のキャラID</span>
+              <input type="number" name="speaker_id" min="0" step="1" value="{{ work_speaker_id }}">
+            </label>
+            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings">試聴する</button>
+          </div>
+        </div>
+        {% if voice_preview_result is defined and voice_preview_result %}
+          <div class="{% if voice_preview_result.ok %}success-panel{% else %}warning-panel{% endif %}">
+            <p>{{ voice_preview_result.message }}</p>
+          </div>
+        {% endif %}
+        {% if work.tts_settings.has_voice_preview %}
+          <div class="voice-preview-playback">
+            <span>視聴音声を再生する</span>
+            <audio controls src="{{ url_for('voice_preview_audio', work_id=work.work_id, v=work.tts_settings.voice_preview_version) }}"></audio>
+          </div>
+        {% endif %}
+        <div class="form-actions">
+          <button class="secondary-button" type="submit">音声設定を保存する</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel hub-card media-card">
+      <div class="card-heading">
+        <h2>📖 EPUB</h2>
+        {% if work.can_download_epub %}
+          <span class="status-pill status-done">済み</span>
+        {% elif work.can_generate %}
+          <span class="status-pill status-current">生成できます</span>
+        {% else %}
+          <span class="status-pill status-pending">未完了</span>
+        {% endif %}
+      </div>
+      {% if work.can_generate %}
+        {% if work.can_download_epub %}
+          <p>EPUBは作成済みです。</p>
+        {% elif work.tts_settings_outputs_stale %}
+          <p>音声設定が変更されています。変更を反映するには、EPUBを生成し直してください。</p>
+        {% elif work.has_epub %}
+          <p>EPUBを生成し直せます。</p>
+        {% else %}
+          <p>EPUBを作成します。</p>
+        {% endif %}
+        <div class="generation-actions">
+          {% if work.has_epub %}
+            <a class="primary-button download-button" href="{{ url_for('download_epub', work_id=work.work_id) }}">ダウンロード</a>
+          {% endif %}
+          {% if not work.can_download_epub %}
+            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}">
+              <button class="button action-button" type="submit">EPUB生成</button>
+            </form>
+          {% endif %}
+        </div>
+        <div class="generation-wait" data-generation-wait hidden>
+          <p>EPUBを生成しています。</p>
+          <p>音声がない場合は、先に音声を生成します。</p>
+          <p>作品の長さによっては数分かかります。</p>
+          <p>この画面を閉じずにお待ちください。</p>
+        </div>
+      {% else %}
+        {% if work.has_draft %}
+          <p>この作品は再編集中です。EPUBを生成するには、先に編集内容を「編集完了として確定」してください。</p>
+        {% else %}
+          <p>まだ編集完了版がありません。</p>
+          <p>先に「読みと息継ぎ編集」で編集完了として確定してください。</p>
+        {% endif %}
+        <div class="generation-actions">
+          <span class="button disabled-button">EPUB生成</span>
+        </div>
+      {% endif %}
+    </section>
+  </section>
+
+  {% if generation_result is defined and generation_result %}
+    <section class="panel generation-result {% if generation_result.ok %}success-panel{% else %}warning-panel{% endif %}">
+      <div class="generation-result-main">
+        <h2>生成結果</h2>
+        <p>{{ generation_result.message }}</p>
+      </div>
+
+      {% if generation_result.needs_confirmation %}
+        <div class="missing-images-confirm">
+          <table class="missing-images-table">
+            <thead>
+              <tr>
+                <th>index</th>
+                <th>image_file</th>
+                <th>探したパス</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for image in generation_result.missing_images %}
+                <tr>
+                  <td>{{ image.index }}</td>
+                  <td>{{ image.image_file }}</td>
+                  <td>{{ image.searched_path }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="generation-actions">
+            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}">
+              <input type="hidden" name="allow_missing_images" value="1">
+              <button class="primary-button" type="submit">生成を続ける</button>
+            </form>
+            <a class="secondary-button cancel-button" href="{{ url_for('work_detail', work_id=work.work_id, view='final', generation_notice='missing_images_cancelled') }}">キャンセル</a>
+          </div>
+        </div>
+      {% endif %}
+
+      <details class="debug-info generation-debug">
+        <summary>詳細情報</summary>
+        {% if generation_result.missing_files %}
+          <div class="detail-block">
+            <div class="detail-title">missing files</div>
+            <ul class="result-list">
+              {% for path in generation_result.missing_files %}<li>{{ path }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+        {% if generation_result.missing_images and not generation_result.needs_confirmation %}
+          <div class="detail-block">
+            <div class="detail-title">missing images</div>
+            <ul class="result-list">
+              {% for image in generation_result.missing_images %}
+                <li>index {{ image.index }} / {{ image.image_file }} / {{ image.searched_path }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+        {% if generation_result.output_paths %}
+          <div class="detail-block">
+            <div class="detail-title">outputs</div>
+            <ul class="result-list">
+              {% for path in generation_result.output_paths %}<li>{{ path }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+        {% if generation_result.report_path %}
+          <p>生成レポート: {{ generation_result.report_path }}</p>
+        {% endif %}
+        {% if generation_result.failed_build_dir %}
+          <p>失敗隔離: {{ generation_result.failed_build_dir }}</p>
+        {% endif %}
+        {% if generation_result.dev_log %}
+          <div class="detail-block">
+            <div class="detail-title">log</div>
+            <ul class="dev-log-list">
+              {% for line in generation_result.dev_log %}<li>{{ line }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+      </details>
+    </section>
+  {% endif %}
+
+  {% if work.errors %}
+    <section class="panel warning-panel">
+      <h2>読み込みエラー</h2>
+      {% for error in work.errors %}<p>{{ error }}</p>{% endfor %}
+    </section>
+  {% endif %}
+
+  <script>
+    const generationScrollKey = "pef2:generation-scroll:{{ work.work_id }}";
+
+    function restoreGenerationScrollPosition() {
+      if (!document.querySelector(".generation-result")) {
+        return;
+      }
+      const storedPosition = sessionStorage.getItem(generationScrollKey);
+      if (storedPosition === null) {
+        return;
+      }
+      sessionStorage.removeItem(generationScrollKey);
+      const scrollTop = Number(storedPosition);
+      if (!Number.isFinite(scrollTop)) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: scrollTop, left: 0, behavior: "auto" });
+      });
+    }
+
+    restoreGenerationScrollPosition();
+
+    document.querySelectorAll(".generation-submit-form").forEach((form) => {
+      form.addEventListener("submit", () => {
+        sessionStorage.setItem(generationScrollKey, String(window.scrollY));
+        document.querySelectorAll("[data-generation-wait]").forEach((item) => {
+          item.hidden = false;
+        });
+        form.querySelectorAll("button").forEach((button) => {
+          button.disabled = true;
+        });
+      });
+    });
+  </script>
+{% endblock %}

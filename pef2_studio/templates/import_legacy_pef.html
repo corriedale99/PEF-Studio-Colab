@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}旧PEF原稿を取り込む - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>旧PEF原稿を取り込む</h1>
+    <p class="form-help">同じ作品名の json と txt を選択してください。</p>
+    <p class="form-help">例: ごんぎつね.json と ごんぎつね.txt</p>
+
+    {% if errors %}
+      <section class="warning-panel import-errors">
+        <h2>取り込みエラー</h2>
+        {% for error in errors %}<p>{{ error }}</p>{% endfor %}
+      </section>
+    {% endif %}
+
+    <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_pef') }}">
+      <label class="file-field">
+        <span>json ファイル</span>
+        <input type="file" name="source_json" accept=".json,application/json">
+      </label>
+      <label class="file-field">
+        <span>txt ファイル</span>
+        <input type="file" name="source_txt" accept=".txt,text/plain">
+      </label>
+      <div class="form-actions">
+        <button class="primary-button" type="submit">取り込む</button>
+        <a class="secondary-button" href="{{ url_for('works_index') }}">一覧へ戻る</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

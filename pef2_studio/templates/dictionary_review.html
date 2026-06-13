@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}{{ review.title }} - 辞書編集 - PEFスタジオ{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id) }}">← 作品詳細へ戻る</a>
+
+  <section class="panel work-header">
+    <h1>📚 辞書編集</h1>
+    <div class="status-summary">
+      <p>読み間違いを防ぎたい語だけ確認し、必要なら読みを修正してください。</p>
+    </div>
+    <details class="debug-info">
+      <summary>詳細情報</summary>
+      <dl class="meta-grid">
+        <div><dt>work_id</dt><dd>{{ review.work_id }}</dd></div>
+        <div><dt>meta.status</dt><dd>{{ review.status }}</dd></div>
+        <div><dt>opened_file</dt><dd>{{ review.opened_file }}</dd></div>
+        <div><dt>items</dt><dd>{{ review.item_count }}</dd></div>
+        <div><dt>workspace</dt><dd>{{ workspace_root }}</dd></div>
+      </dl>
+    </details>
+  </section>
+
+  {% if result is defined and result %}
+    <section class="panel {% if result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
+      <h2>{% if result.status == 'success' %}完了{% else %}エラー{% endif %}</h2>
+      <p>{{ result.message }}</p>
+      {% if result.errors %}
+        <ul class="result-list">
+            {% for error in result.errors %}
+              <li>{{ error.message or error.code }}</li>
+            {% endfor %}
+          </ul>
+      {% endif %}
+      {% if result.status != 'success' %}
+        <details class="debug-info generation-debug">
+          <summary>詳細情報</summary>
+          <dl class="meta-grid">
+            <div><dt>failed_stage</dt><dd>{{ result.failed_stage }}</dd></div>
+            <div><dt>error_type</dt><dd>{{ result.error_type }}</dd></div>
+            <div><dt>error_message</dt><dd>{{ result.error_message }}</dd></div>
+            <div><dt>affected_file</dt><dd>{{ result.affected_file }}</dd></div>
+            <div><dt>committed</dt><dd>{{ result.committed }}</dd></div>
+            <div><dt>meta_status_changed</dt><dd>{{ result.meta_status_changed }}</dd></div>
+            {% if result.future_recovery_hint %}<div><dt>future_recovery_hint</dt><dd>{{ result.future_recovery_hint }}</dd></div>{% endif %}
+            {% if result.report_path %}<div><dt>report_path</dt><dd>{{ result.report_path }}</dd></div>{% endif %}
+          </dl>
+          {% if result.existing_edit_artifacts %}
+            <div class="detail-block">
+              <div class="detail-title">existing_edit_artifacts</div>
+              <ul class="result-list">
+                {% for path in result.existing_edit_artifacts %}<li>{{ path }}</li>{% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+        </details>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <section class="panel">
+    <form method="post" action="{{ url_for('finalize_dictionary_review', work_id=review.work_id) }}">
+      <input type="hidden" name="item_count" value="{{ review.item_count }}">
+      {% if review.can_add_dictionary_item %}
+        <div class="dictionary-add-block">
+          <h2>辞書項目を追加</h2>
+          <p class="form-help">作品内で読み間違えやすい語を追加できます。</p>
+          <div class="form-grid">
+            <label>
+              <span>単語</span>
+              <input type="text" name="new_word">
+            </label>
+            <label>
+              <span>読み</span>
+              <input type="text" name="new_reading">
+            </label>
+            <label>
+              <span>メモ</span>
+              <textarea name="new_notes" rows="2"></textarea>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button class="secondary-button" type="submit" formaction="{{ url_for('add_dictionary_review_item', work_id=review.work_id) }}">項目を追加</button>
+          </div>
+        </div>
+      {% endif %}
+      <div class="form-actions review-actions">
+        <button class="primary-button" type="submit">保存する</button>
+        <a class="button" href="{{ url_for('work_detail', work_id=review.work_id) }}">保存しない</a>
+      </div>
+      <p class="form-help">保存すると編集用データを自動作成します。</p>
+      <p class="form-help">＊ は、候補読みから変更されている項目です。</p>
+      <p class="form-help">不採用: 候補として残しますが、作品辞書には入れません。削除: 保存すると、この一覧から消えます。</p>
+      <div class="review-table-wrap">
+        <table class="review-table">
+          <thead>
+            <tr>
+              <th>No.</th>
+              <th>単語</th>
+              <th>候補読み</th>
+              <th>修正後読み</th>
+              <th>変更</th>
+              <th>操作</th>
+              <th>メモ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in review["items"] %}
+              <tr class="{% if item.operation == 'delete' %}review-row-delete{% endif %}">
+                <td>No. {{ loop.index }}</td>
+                <td>
+                  <div class="review-word">{{ item.word }}</div>
+                  <input type="hidden" name="item_{{ loop.index0 }}_index" value="{{ item.index }}">
+                  <input type="hidden" name="item_{{ loop.index0 }}_word" value="{{ item.word }}">
+                  <input type="hidden" name="item_{{ loop.index0 }}_reading_suggested" value="{{ item.reading_suggested }}">
+                </td>
+                <td>{{ item.reading_suggested }}</td>
+                <td>
+                  <input
+                    class="review-input"
+                    type="text"
+                    name="item_{{ loop.index0 }}_reading_final"
+                    value="{{ item.reading_final }}"
+                  >
+                </td>
+                <td class="change-mark">{{ item.change_mark }}</td>
+                <td>
+                  <div class="review-radio-group">
+                    <label><input type="radio" name="item_{{ loop.index0 }}_operation" value="adopt" {% if item.operation == "adopt" %}checked{% endif %}>採用</label>
+                    <label><input type="radio" name="item_{{ loop.index0 }}_operation" value="reject" {% if item.operation == "reject" %}checked{% endif %}>不採用</label>
+                    <label><input type="radio" name="item_{{ loop.index0 }}_operation" value="delete" {% if item.operation == "delete" %}checked{% endif %}>削除</label>
+                  </div>
+                </td>
+                <td>
+                  <textarea class="review-notes" name="item_{{ loop.index0 }}_notes" rows="2">{{ item.notes }}</textarea>
+                </td>
+              </tr>
+            {% endfor %}
+            {% if not review["items"] %}
+              <tr>
+                <td colspan="7">確認対象の単語はありません。</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      <div class="form-actions review-actions">
+        <button class="primary-button" type="submit">保存する</button>
+        <a class="button" href="{{ url_for('work_detail', work_id=review.work_id) }}">保存しない</a>
+        {% if review.back_to_detail_ready %}
+          <a class="button" href="{{ url_for('reading_edit', work_id=review.work_id) }}">読みと息継ぎ編集へ進む</a>
+        {% endif %}
+      </div>
+      <p class="form-help">保存すると編集用データを自動作成します。</p>
+    </form>
+  </section>
+{% endblock %}
