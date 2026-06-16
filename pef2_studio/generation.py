@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from pef2_engine import workspace_paths
 from pef2_engine.epub_builder import EPUB_BUILD_REPORT_FILENAME, generate_epub_for_work
+from pef2_engine.generation_lock import acquire_generation_lock, release_generation_lock
 from pef2_engine.io_utils import read_json, write_json
 from pef2_engine.tts_generator import (
     AUDIO_FILENAME,
@@ -21,6 +23,15 @@ from pef2_engine.tts_settings import (
     resolve_tts_settings,
     work_tts_settings_path,
     workspace_settings_path,
+)
+from pef2_studio.generation_progress import (
+    PROGRESS_DIRNAME,
+    create_task_id,
+    is_valid_task_id,
+    new_progress,
+    read_progress,
+    update_progress,
+    write_progress,
 )
 from pef2_studio.workspace_view import resolve_work_dir
 
@@ -46,15 +57,194 @@ def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
     if not final_path.exists():
         return _preflight_result("tts", work_dir, FINAL_REQUIRED_MESSAGE, ["04_processed_final.json がありません。"])
 
-    try:
-        report = generate_tts_for_work(
-            work_dir,
-            workspace_root,
-            speaker_id=_studio_speaker_id(workspace_root, work_dir),
-        )
-    except Exception as error:
-        return _exception_result("tts", work_dir, error)
+    lock_result = acquire_generation_lock(work_dir, "tts")
+    if not lock_result.get("ok"):
+        return _lock_result("tts", work_dir, lock_result)
 
+    try:
+        try:
+            report = generate_tts_for_work(
+                work_dir,
+                workspace_root,
+                speaker_id=_studio_speaker_id(workspace_root, work_dir),
+            )
+        except Exception as error:
+            return _exception_result("tts", work_dir, error)
+    finally:
+        release_generation_lock(work_dir, lock_result.get("lock"))
+
+    return _tts_generation_result(workspace_root, work_dir, report)
+
+
+def start_tts_generation_task(
+    workspace_root: Path,
+    work_id: str,
+    *,
+    next_action: str = "",
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    next_action = "epub" if next_action == "epub" else ""
+
+    final_path = work_dir / workspace_paths.PROCESSED_FINAL_FILENAME
+    if not final_path.exists():
+        return _task_start_failed(
+            _preflight_result("tts", work_dir, FINAL_REQUIRED_MESSAGE, ["04_processed_final.json がありません。"])
+        )
+
+    lock_result = acquire_generation_lock(work_dir, "tts")
+    if not lock_result.get("ok"):
+        return _task_start_failed(_lock_result("tts", work_dir, lock_result))
+
+    lock_data = lock_result.get("lock")
+    task_id = create_task_id("tts")
+    progress = new_progress(
+        work_dir,
+        task_id=task_id,
+        operation="tts",
+        status="running",
+        phase="生成中" if next_action == "epub" else "音声生成中",
+        message="生成しています。" if next_action == "epub" else "音声を生成しています。",
+        lock_started_at=str(lock_data.get("started_at") or "") if isinstance(lock_data, dict) else "",
+        next_action=next_action,
+        next_action_status="pending" if next_action else "",
+    )
+    write_progress(work_dir, progress)
+
+    thread = Thread(
+        target=_run_tts_generation_task,
+        name=f"pef2-tts-{task_id}",
+        args=(Path(workspace_root), work_dir, task_id, lock_data, next_action),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception as error:
+        update_progress(
+            work_dir,
+            task_id,
+            status="failed",
+            phase="音声生成失敗",
+            message="音声生成に失敗しました。",
+            error={"message": f"{type(error).__name__}: {error}"},
+        )
+        release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        return {
+            "ok": False,
+            "status": "failed",
+            "message": "音声生成に失敗しました。",
+            "task_id": task_id,
+            "progress": read_progress(work_dir, task_id),
+        }
+
+    return {
+        "ok": True,
+        "status": "started",
+        "message": "生成しています。" if next_action == "epub" else "音声生成を開始しました。",
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
+def load_tts_generation_progress(workspace_root: Path, work_id: str, task_id: str) -> dict | None:
+    if not is_valid_task_id(task_id, operation="tts"):
+        return None
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    return read_progress(work_dir, task_id)
+
+
+def load_latest_blocked_generation_result(workspace_root: Path, work_id: str) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    progress_dir = work_dir / PROGRESS_DIRNAME
+    if not progress_dir.is_dir():
+        return None
+    candidates = sorted(
+        progress_dir.glob("tts_*.json"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )
+    for path in candidates:
+        progress = read_progress(work_dir, path.stem)
+        if not _is_blocked_epub_progress(progress):
+            continue
+        result = progress.get("result")
+        if isinstance(result, dict):
+            return _generation_result_from_progress(work_dir, result)
+    return None
+
+
+def _run_tts_generation_task(
+    workspace_root: Path,
+    work_dir: Path,
+    task_id: str,
+    lock_data: object,
+    next_action: str,
+) -> None:
+    lock_released = False
+    try:
+        try:
+            report = generate_tts_for_work(
+                work_dir,
+                workspace_root,
+                speaker_id=_studio_speaker_id(workspace_root, work_dir),
+            )
+            result = _tts_generation_result(workspace_root, work_dir, report)
+        except Exception as error:
+            result = _exception_result("tts", work_dir, error)
+
+        status = "completed" if result.get("ok") else "failed"
+        update_progress(
+            work_dir,
+            task_id,
+            status=status,
+            phase="音声生成完了" if status == "completed" else "音声生成失敗",
+            message=str(result.get("message") or ""),
+            result=_progress_result(result),
+            error=None if status == "completed" else _progress_error(result),
+            next_action_status="pending" if status == "completed" and next_action else "",
+        )
+        if status != "completed" or next_action != "epub":
+            return
+
+        release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        lock_released = True
+
+        update_progress(
+            work_dir,
+            task_id,
+            status="running",
+            phase="EPUB生成中",
+            message="音声生成が完了しました。EPUBを生成しています。",
+            next_action_status="running",
+            cancellable=False,
+            finished_at="",
+        )
+        epub_result = run_epub_generation(workspace_root, work_dir.name)
+        if epub_result is None:
+            epub_result = _preflight_result("epub", work_dir, "作品が見つかりません。", ["work directory was not found."])
+        next_status = _next_action_status(epub_result)
+        progress_status = "completed" if next_status in {"completed", "blocked"} else "failed"
+        update_progress(
+            work_dir,
+            task_id,
+            status=progress_status,
+            phase=_next_action_phase(next_status),
+            message=str(epub_result.get("message") or ""),
+            result=_progress_result(epub_result),
+            error=None if next_status in {"completed", "blocked"} else _progress_error(epub_result),
+            next_action_status=next_status,
+        )
+    finally:
+        if not lock_released:
+            release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+
+
+def _tts_generation_result(workspace_root: Path, work_dir: Path, report: dict) -> dict:
     report_path = work_dir / "audio" / TTS_BUILD_REPORT_FILENAME
     if report.get("ok"):
         meta_status = _meta_status(work_dir)
@@ -91,6 +281,85 @@ def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
         report_path,
         _report_error_lines(report),
     )
+
+
+def _task_start_failed(result: dict) -> dict:
+    return {
+        "ok": False,
+        "status": result.get("status") or "failed",
+        "message": result.get("message") or "",
+        "task_id": "",
+        "progress": None,
+        "errors": result.get("dev_log", []),
+    }
+
+
+def _progress_result(result: dict) -> dict:
+    return {
+        "generation_kind": result.get("generation_kind"),
+        "status": result.get("status"),
+        "ok": bool(result.get("ok")),
+        "message": result.get("message") or "",
+        "output_paths": result.get("output_paths") or [],
+        "report_path": result.get("report_path") or "",
+        "failed_build_dir": result.get("failed_build_dir") or "",
+        "missing_files": result.get("missing_files") or [],
+        "missing_images": result.get("missing_images") or [],
+        "needs_confirmation": bool(result.get("needs_confirmation")),
+        "download_ready": bool(result.get("download_ready")),
+        "dev_log": list(result.get("dev_log") or [])[:8],
+    }
+
+
+def _progress_error(result: dict) -> dict:
+    return {
+        "message": result.get("message") or "音声生成に失敗しました。",
+        "details": list(result.get("dev_log") or [])[:5],
+    }
+
+
+def _is_blocked_epub_progress(progress: object) -> bool:
+    if not isinstance(progress, dict):
+        return False
+    return (
+        progress.get("operation") == "tts"
+        and progress.get("next_action") == "epub"
+        and progress.get("next_action_status") == "blocked"
+    )
+
+
+def _generation_result_from_progress(work_dir: Path, result: dict) -> dict:
+    return {
+        "generation_kind": result.get("generation_kind") or "epub",
+        "status": result.get("status") or "needs_confirmation",
+        "ok": bool(result.get("ok")),
+        "message": result.get("message") or "",
+        "output_paths": result.get("output_paths") or [],
+        "report_path": result.get("report_path") or "",
+        "failed_build_dir": result.get("failed_build_dir") or "",
+        "missing_files": result.get("missing_files") or [],
+        "missing_images": result.get("missing_images") or [],
+        "needs_confirmation": bool(result.get("needs_confirmation")),
+        "download_ready": bool(result.get("download_ready")),
+        "dev_log": result.get("dev_log") or [],
+        "work_id": work_dir.name,
+    }
+
+
+def _next_action_status(result: dict) -> str:
+    if result.get("ok"):
+        return "completed"
+    if result.get("needs_confirmation"):
+        return "blocked"
+    return "failed"
+
+
+def _next_action_phase(next_action_status: str) -> str:
+    if next_action_status == "completed":
+        return "EPUB生成完了"
+    if next_action_status == "blocked":
+        return "EPUB生成確認待ち"
+    return "EPUB生成失敗"
 
 
 def run_voice_preview_generation(workspace_root: Path, work_id: str, *, speaker_id: int | str | None = None) -> dict | None:
@@ -150,21 +419,27 @@ def run_epub_generation(workspace_root: Path, work_id: str, *, allow_missing_ima
     if preflight is not None:
         return preflight
 
-    tts_result = _ensure_audio_for_epub(workspace_root, work_dir)
-    if tts_result is not None:
-        _restore_meta_after_failed_epub(work_dir, original_meta)
-        return tts_result
-
-    preflight = _epub_preflight_after_audio(work_dir, allow_missing_images=allow_missing_images)
-    if preflight is not None:
-        _restore_meta_after_failed_epub(work_dir, original_meta)
-        return preflight
-
+    lock_result = acquire_generation_lock(work_dir, "epub")
+    if not lock_result.get("ok"):
+        return _lock_result("epub", work_dir, lock_result)
     try:
-        report = generate_epub_for_work(work_dir, workspace_root, allow_missing_images=allow_missing_images)
-    except Exception as error:
-        _restore_meta_after_failed_epub(work_dir, original_meta)
-        return _exception_result("epub", work_dir, error)
+        tts_result = _ensure_audio_for_epub(workspace_root, work_dir)
+        if tts_result is not None:
+            _restore_meta_after_failed_epub(work_dir, original_meta)
+            return tts_result
+
+        preflight = _epub_preflight_after_audio(work_dir, allow_missing_images=allow_missing_images)
+        if preflight is not None:
+            _restore_meta_after_failed_epub(work_dir, original_meta)
+            return preflight
+
+        try:
+            report = generate_epub_for_work(work_dir, workspace_root, allow_missing_images=allow_missing_images)
+        except Exception as error:
+            _restore_meta_after_failed_epub(work_dir, original_meta)
+            return _exception_result("epub", work_dir, error)
+    finally:
+        release_generation_lock(work_dir, lock_result.get("lock"))
 
     report_path = work_dir / "epub" / EPUB_BUILD_REPORT_FILENAME
     if _epub_completed(work_dir, report, report_path):
@@ -424,6 +699,24 @@ def _preflight_result(
     }
 
 
+def _lock_result(generation_kind: str, work_dir: Path, lock_result: dict) -> dict:
+    return {
+        "generation_kind": generation_kind,
+        "status": str(lock_result.get("status") or "locked"),
+        "ok": False,
+        "message": str(lock_result.get("message") or ""),
+        "output_paths": [],
+        "report_path": "",
+        "failed_build_dir": "",
+        "missing_files": [],
+        "missing_images": [],
+        "needs_confirmation": False,
+        "download_ready": False,
+        "dev_log": _lock_dev_log(lock_result),
+        "work_id": work_dir.name,
+    }
+
+
 def build_generation_notice_result(work_id: str, notice: str | None) -> dict | None:
     if notice != "missing_images_cancelled":
         return None
@@ -442,6 +735,26 @@ def build_generation_notice_result(work_id: str, notice: str | None) -> dict | N
         "dev_log": [],
         "work_id": work_id,
     }
+
+
+def _lock_dev_log(lock_result: dict) -> list[str]:
+    status = str(lock_result.get("status") or "locked")
+    lines = [f"generation lock: {status}"]
+    lock_data = lock_result.get("lock")
+    if isinstance(lock_data, dict):
+        operation = lock_data.get("operation")
+        started_at = lock_data.get("started_at")
+        if operation:
+            lines.append(f"operation: {operation}")
+        if started_at:
+            lines.append(f"started_at: {started_at}")
+    backup_path = str(lock_result.get("backup_path") or "")
+    if backup_path:
+        lines.append(f"backup_path: {backup_path}")
+    error = str(lock_result.get("error") or "")
+    if error:
+        lines.append(error)
+    return lines
 
 
 def _report_result(

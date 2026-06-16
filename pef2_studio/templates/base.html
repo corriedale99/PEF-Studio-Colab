@@ -13,5 +13,34 @@
     <main class="page">
       {% block content %}{% endblock %}
     </main>
+    <script>
+      document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || !form.dataset.busyMessage) {
+          return;
+        }
+        if (form.dataset.busySubmitted === "1") {
+          event.preventDefault();
+          return;
+        }
+        form.dataset.busySubmitted = "1";
+        const submitter = event.submitter;
+        if (submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) {
+          submitter.dataset.originalLabel = submitter.value || submitter.textContent || "";
+          if (submitter instanceof HTMLButtonElement) {
+            submitter.textContent = "処理中です";
+          } else if (submitter.type === "submit") {
+            submitter.value = "処理中です";
+          }
+        }
+        form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((button) => {
+          button.disabled = true;
+        });
+        const message = document.createElement("p");
+        message.className = "form-busy-message";
+        message.textContent = form.dataset.busyMessage;
+        form.insertAdjacentElement("afterend", message);
+      });
+    </script>
   </body>
 </html>

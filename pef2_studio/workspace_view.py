@@ -35,6 +35,7 @@ from pef2_engine.processed_editing import (
     edit_text_to_audio,
 )
 from pef2_engine.gemini_dictionary_review import MAX_REVIEW_TERMS
+from pef2_engine.generation_lock import ACTIVE_LOCK_MESSAGE, generation_lock_path, read_generation_lock
 from pef2_engine.step5_dictionary_draft import (
     GEMINI_REVIEW_RAW_FILENAME,
     STEP5_DIRNAME,
@@ -273,6 +274,7 @@ def load_work_detail(
     pagination = paginate_segments(all_segments, page=page, per_page=per_page)
     dictionary_review_info = _dictionary_review_debug_info(work_dir)
     gemini_review_debug = _gemini_review_debug_info(work_dir)
+    active_generation_lock = _active_generation_lock_info(work_dir)
     has_pre_processed = (
         work_dir / workspace_paths.PRE_PROCESSED_JSON_FILENAME
     ).exists()
@@ -337,8 +339,7 @@ def load_work_detail(
             has_final=has_final,
         ),
         "has_dictionary_review": has_dictionary_review,
-        "can_open_dictionary_review": has_dictionary_review
-        or str(meta.get("status") or "") == "dictionary_review_ready",
+        "can_open_dictionary_review": has_dictionary_review,
         "can_create_empty_dictionary_processed": _can_create_empty_dictionary_processed(
             work_dir, meta
         ),
@@ -348,6 +349,7 @@ def load_work_detail(
         "dictionary_review_items": dictionary_review_info["items"],
         "dictionary_review_source": dictionary_review_info["source"],
         "gemini_review_debug": gemini_review_debug,
+        "active_generation_lock": active_generation_lock,
         "has_pre_processed": has_pre_processed,
         "has_processed": (work_dir / workspace_paths.PROCESSED_JSON_FILENAME).exists(),
         "has_draft": has_draft,
@@ -357,6 +359,7 @@ def load_work_detail(
         "can_download_epub": _has_current_epub(workspace_root, work_dir),
         "can_generate": (work_dir / workspace_paths.PROCESSED_FINAL_FILENAME).exists()
         and not (work_dir / workspace_paths.PROCESSED_DRAFT_FILENAME).exists(),
+        "audio_needs_regeneration": _audio_needs_regeneration(workspace_root, work_dir),
         "epub_needs_regeneration": _epub_needs_regeneration(workspace_root, work_dir),
         "tts_settings_outputs_stale": _tts_settings_newer_than_outputs(
             workspace_root, work_dir
@@ -407,7 +410,7 @@ def save_work_tts_settings_submission(workspace_root: Path, work_id: str, form_d
     write_work_tts_settings(work_dir, existing)
     return {
         "status": "success",
-        "message": "音声設定を保存しました。変更をEPUBに反映するには、音声生成とEPUB生成をやり直してください。",
+        "message": "音声設定を保存しました。変更を反映するには、EPUB生成をやり直してください。",
         "speaker_id": speaker_id,
     }
 
@@ -825,6 +828,7 @@ def import_legacy_dictionary_upload(
         return {"status": "failed", "errors": errors, "warnings": []}
 
     review_path = workspace_paths.dictionary_review_path(work_dir)
+    had_dictionary_review = review_path.exists()
     meta_path = work_dir / workspace_paths.WORK_META_FILENAME
     original_meta = _read_optional_dict(meta_path)
     edit_artifacts = detect_existing_edit_artifacts(work_dir)
@@ -896,6 +900,7 @@ def import_legacy_dictionary_upload(
         "message": "作品辞書を読み込みました。",
         "errors": [],
         "warnings": warnings,
+        "display_scope": "dictionary_card" if had_dictionary_review else "header",
     }
 
 
@@ -2058,6 +2063,31 @@ def _has_audio_outputs(work_dir: Path) -> bool:
     ).is_file()
 
 
+def _audio_needs_regeneration(workspace_root: Path, work_dir: Path) -> bool:
+    final_path = work_dir / workspace_paths.PROCESSED_FINAL_FILENAME
+    audio_path = work_dir / "audio" / "audio.mp3"
+    sync_path = work_dir / "audio" / "sync_map.json"
+    if not final_path.is_file():
+        return False
+    if not audio_path.is_file() or not sync_path.is_file():
+        return True
+    try:
+        final_mtime = final_path.stat().st_mtime
+        audio_mtime = audio_path.stat().st_mtime
+        sync_mtime = sync_path.stat().st_mtime
+        settings_path = _effective_tts_settings_path(workspace_root, work_dir)
+        settings_mtime = settings_path.stat().st_mtime if settings_path is not None else None
+    except OSError:
+        return True
+    if final_mtime > audio_mtime or final_mtime > sync_mtime:
+        return True
+    if settings_mtime is not None and (
+        settings_mtime > audio_mtime or settings_mtime > sync_mtime
+    ):
+        return True
+    return False
+
+
 def _has_official_epub(work_dir: Path) -> bool:
     return _latest_official_epub(work_dir) is not None
 
@@ -2120,6 +2150,26 @@ def _effective_tts_settings_path(workspace_root: Path, work_dir: Path) -> Path |
     if workspace_settings.is_file():
         return workspace_settings
     return None
+
+
+def _active_generation_lock_info(work_dir: Path) -> dict:
+    lock_data = read_generation_lock(work_dir)
+    if lock_data is None:
+        return {
+            "active": False,
+            "message": "",
+            "operation": "",
+            "started_at": "",
+            "lock_path": "",
+        }
+    return {
+        "active": True,
+        "message": "生成中です。完了後に再読み込みしてください。",
+        "details_message": ACTIVE_LOCK_MESSAGE,
+        "operation": str(lock_data.get("operation") or ""),
+        "started_at": str(lock_data.get("started_at") or ""),
+        "lock_path": str(generation_lock_path(work_dir)),
+    }
 
 
 def _work_created_label(work_id: str) -> str:

@@ -13,7 +13,7 @@
       </section>
     {% endif %}
 
-    <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_pef') }}">
+    <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_pef') }}" data-busy-message="処理中です。しばらくお待ちください。">
       <label class="file-field">
         <span>json ファイル</span>
         <input type="file" name="source_json" accept=".json,application/json">

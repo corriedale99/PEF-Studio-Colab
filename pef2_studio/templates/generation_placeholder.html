@@ -2,7 +2,7 @@
 {% block title %}{{ generation.generation_label }} - PEFスタジオ{% endblock %}
 {% block content %}
   <section class="panel">
-    <a class="back-link" href="{{ url_for('work_detail', work_id=generation.work_id) }}">作品詳細へ戻る</a>
+    <a class="back-link" href="{{ url_for('work_detail', work_id=generation.work_id, _anchor='media-card') }}">作品詳細へ戻る</a>
     <h1>{{ generation.generation_label }}</h1>
     <p>{{ generation.title }}</p>
     {% if generation.can_generate %}

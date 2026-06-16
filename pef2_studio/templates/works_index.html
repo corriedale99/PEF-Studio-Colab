@@ -64,7 +64,7 @@
     {% if workspace_settings_result %}
       <div class="notice {% if workspace_settings_result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">{{ workspace_settings_result.message }}</div>
     {% endif %}
-    <form class="inline-form" method="post" action="{{ url_for('save_workspace_tts_settings') }}#workspace-settings">
+    <form class="inline-form" method="post" action="{{ url_for('save_workspace_tts_settings') }}#workspace-settings" data-busy-message="処理中です。しばらくお待ちください。">
       {% set workspace_speaker_id = workspace_voice_preview_result.speaker_id if workspace_voice_preview_result is defined and workspace_voice_preview_result and workspace_voice_preview_result.speaker_id is not none else workspace_tts_settings.speaker_id %}
       <input type="hidden" name="sort" value="{{ selected_sort }}">
       <div class="settings-category">

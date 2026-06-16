@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ review.title }} - 辞書編集 - PEFスタジオ{% endblock %}
 {% block content %}
-  <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id) }}">← 作品詳細へ戻る</a>
+  <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">← 作品詳細へ戻る</a>
 
   <section class="panel work-header">
     <h1>📚 辞書編集</h1>
@@ -58,7 +58,7 @@
   {% endif %}
 
   <section class="panel">
-    <form method="post" action="{{ url_for('finalize_dictionary_review', work_id=review.work_id) }}">
+    <form method="post" action="{{ url_for('finalize_dictionary_review', work_id=review.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
       <input type="hidden" name="item_count" value="{{ review.item_count }}">
       {% if review.can_add_dictionary_item %}
         <div class="dictionary-add-block">
@@ -85,7 +85,7 @@
       {% endif %}
       <div class="form-actions review-actions">
         <button class="primary-button" type="submit">保存する</button>
-        <a class="button" href="{{ url_for('work_detail', work_id=review.work_id) }}">保存しない</a>
+        <a class="button" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">保存しない</a>
       </div>
       <p class="form-help">保存すると編集用データを自動作成します。</p>
       <p class="form-help">＊ は、候補読みから変更されている項目です。</p>
@@ -145,7 +145,7 @@
       </div>
       <div class="form-actions review-actions">
         <button class="primary-button" type="submit">保存する</button>
-        <a class="button" href="{{ url_for('work_detail', work_id=review.work_id) }}">保存しない</a>
+        <a class="button" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">保存しない</a>
         {% if review.back_to_detail_ready %}
           <a class="button" href="{{ url_for('reading_edit', work_id=review.work_id) }}">読みと息継ぎ編集へ進む</a>
         {% endif %}

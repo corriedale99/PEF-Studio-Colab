@@ -7,6 +7,7 @@ try:
     from flask import (
         Flask,
         abort,
+        jsonify,
         redirect,
         render_template,
         request,
@@ -16,6 +17,7 @@ try:
 except ModuleNotFoundError as error:
     Flask = None
     abort = None
+    jsonify = None
     redirect = None
     render_template = None
     request = None
@@ -61,13 +63,24 @@ from pef2_engine.tts_generator import (
     VOICE_PREVIEW_FILENAME,
     WORKSPACE_TEMP_DIRNAME,
 )
+from pef2_engine.generation_lock import (
+    ACTIVE_LOCK_MESSAGE,
+    STALE_LOCK_CLEARED_MESSAGE,
+    clear_stale_generation_lock,
+    is_generation_lock_stale,
+    read_generation_lock,
+)
 from pef2_studio.generation import (
     build_generation_notice_result,
+    load_latest_blocked_generation_result,
+    load_tts_generation_progress,
     run_epub_generation,
     run_tts_generation,
     run_voice_preview_generation,
     run_workspace_voice_preview_generation,
+    start_tts_generation_task,
 )
+from pef2_studio.generation_progress import is_valid_task_id
 from pef2_studio.ui_constants import SYMBOL_CATEGORY_UI
 
 
@@ -188,7 +201,14 @@ def create_app(workspace_root: Path | None = None):
             txt_upload=request.files.get("source_txt"),
         )
         if result.get("status") == "success":
-            return redirect(url_for("work_detail", work_id=result["work_id"]))
+            return redirect(
+                url_for(
+                    "work_detail",
+                    work_id=result["work_id"],
+                    import_notice="legacy_imported",
+                    _anchor="manuscript-card",
+                )
+            )
         return (
             render_template(
                 "import_legacy_pef.html",
@@ -211,6 +231,7 @@ def create_app(workspace_root: Path | None = None):
                     "work_detail",
                     work_id=result["work_id"],
                     import_notice="text_imported",
+                    _anchor="manuscript-card",
                 )
             )
         return (
@@ -236,6 +257,7 @@ def create_app(workspace_root: Path | None = None):
             dictionary_import_result=_import_notice_result(
                 request.args.get("import_notice")
             ),
+            status_message=_status_notice_result(request.args.get("status_notice")),
         )
 
     @app.get("/works/<work_id>/reading-edit")
@@ -264,6 +286,19 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/images/<segment_index>/upload")
     def upload_work_image(work_id: str, segment_index: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            page = load_work_images_page(resolved_workspace_root, work_id, result=lock_result)
+            if page is None:
+                abort(404)
+            return (
+                render_template(
+                    "work_images.html",
+                    workspace_root=resolved_workspace_root,
+                    page=page,
+                ),
+                _lock_status_code(lock_result),
+            )
         result = save_work_image_upload(
             resolved_workspace_root,
             work_id,
@@ -297,6 +332,13 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/dictionary-review/add-item")
     def add_dictionary_review_item(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_dictionary_review(
+                work_id,
+                result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = add_dictionary_review_item_submission(
             resolved_workspace_root, work_id, request.form
         )
@@ -311,13 +353,27 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/dictionary-review/finalize")
     def finalize_dictionary_review(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_dictionary_review(
+                work_id,
+                result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = finalize_dictionary_review_submission(
             resolved_workspace_root, work_id, request.form
         )
         if result is None:
             abort(404)
         if result.get("status") == "success":
-            return redirect(url_for("work_detail", work_id=work_id))
+            return redirect(
+                url_for(
+                    "work_detail",
+                    work_id=work_id,
+                    status_notice="dictionary_finalized",
+                    _anchor="dictionary-card",
+                )
+            )
         return _render_dictionary_review(
             work_id,
             result=result,
@@ -327,13 +383,28 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/dictionary-review/direct-finalize")
     def direct_finalize_dictionary_review(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            lock_result.setdefault("title", "辞書から編集用データを作成")
+            return _render_work_detail(
+                work_id,
+                dictionary_import_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = finalize_dictionary_review_direct_submission(
             resolved_workspace_root, work_id
         )
         if result is None:
             abort(404)
         if result.get("status") == "success":
-            return redirect(url_for("work_detail", work_id=work_id))
+            return redirect(
+                url_for(
+                    "work_detail",
+                    work_id=work_id,
+                    status_notice="dictionary_finalized",
+                    _anchor="dictionary-card",
+                )
+            )
         result.setdefault("title", "辞書から編集用データを作成")
         return _render_work_detail(
             work_id,
@@ -343,13 +414,28 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/create-empty-dictionary-processed")
     def create_empty_dictionary_processed(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            lock_result.setdefault("title", "辞書なし編集用データ作成結果")
+            return _render_work_detail(
+                work_id,
+                dictionary_import_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = create_empty_dictionary_processed_submission(
             resolved_workspace_root, work_id
         )
         if result is None:
             abort(404)
         if result.get("status") == "success":
-            return redirect(url_for("work_detail", work_id=work_id))
+            return redirect(
+                url_for(
+                    "work_detail",
+                    work_id=work_id,
+                    status_notice="empty_dictionary_processed",
+                    _anchor="dictionary-card",
+                )
+            )
         result.setdefault("title", "辞書なし編集用データ作成結果")
         return _render_work_detail(
             work_id,
@@ -359,6 +445,14 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/create-manual-dictionary-review")
     def create_manual_dictionary_review(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            lock_result.setdefault("title", "手動辞書作成結果")
+            return _render_work_detail(
+                work_id,
+                dictionary_import_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = create_manual_dictionary_review_submission(
             resolved_workspace_root, work_id
         )
@@ -375,6 +469,14 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/create-ai-dictionary-review")
     def create_ai_dictionary_review(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            lock_result.setdefault("title", "AI辞書候補")
+            return _render_work_detail(
+                work_id,
+                dictionary_import_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = create_ai_dictionary_review_submission(
             resolved_workspace_root, work_id
         )
@@ -412,6 +514,13 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/import-legacy-dictionary")
     def import_legacy_dictionary(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_work_detail(
+                work_id,
+                dictionary_import_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = import_legacy_dictionary_upload(
             resolved_workspace_root,
             work_id,
@@ -429,6 +538,13 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/voice-settings")
     def save_tts_settings(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_work_detail(
+                work_id,
+                tts_settings_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = save_work_tts_settings_submission(
             resolved_workspace_root, work_id, request.form
         )
@@ -489,12 +605,61 @@ def create_app(workspace_root: Path | None = None):
         detail = load_work_detail(resolved_workspace_root, work_id, view="final")
         if detail is None:
             abort(404)
-        return render_template(
-            "work_detail.html",
-            workspace_root=resolved_workspace_root,
-            work=detail,
-            symbol_category_ui=SYMBOL_CATEGORY_UI,
-            generation_result=result,
+        return (
+            render_template(
+                "work_detail.html",
+                workspace_root=resolved_workspace_root,
+                work=detail,
+                symbol_category_ui=SYMBOL_CATEGORY_UI,
+                generation_result=result,
+            ),
+            _generation_status_code(result),
+        )
+
+    @app.post("/works/<work_id>/tts/start")
+    def start_tts_generation(work_id: str):
+        result = start_tts_generation_task(
+            resolved_workspace_root,
+            work_id,
+            next_action="epub" if request.form.get("next_action") == "epub" else "",
+        )
+        if result is None:
+            abort(404)
+        return _json_response(result, _task_start_status_code(result))
+
+    @app.get("/works/<work_id>/tts/progress/<task_id>")
+    def tts_generation_progress(work_id: str, task_id: str):
+        if not is_valid_task_id(task_id, operation="tts"):
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "invalid_task_id",
+                    "message": "進捗情報を確認できませんでした。",
+                },
+                400,
+            )
+        progress = load_tts_generation_progress(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if progress is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "message": "進捗情報が見つかりません。画面を再読み込みしてください。",
+                },
+                404,
+            )
+        return _json_response(
+            {
+                "ok": True,
+                "status": progress.get("status"),
+                "message": progress.get("message"),
+                "progress": progress,
+            },
+            200,
         )
 
     @app.post("/works/<work_id>/epub")
@@ -509,12 +674,15 @@ def create_app(workspace_root: Path | None = None):
         detail = load_work_detail(resolved_workspace_root, work_id, view="final")
         if detail is None:
             abort(404)
-        return render_template(
-            "work_detail.html",
-            workspace_root=resolved_workspace_root,
-            work=detail,
-            symbol_category_ui=SYMBOL_CATEGORY_UI,
-            generation_result=result,
+        return (
+            render_template(
+                "work_detail.html",
+                workspace_root=resolved_workspace_root,
+                work=detail,
+                symbol_category_ui=SYMBOL_CATEGORY_UI,
+                generation_result=result,
+            ),
+            _generation_status_code(result),
         )
 
     @app.get("/works/<work_id>/epub/download")
@@ -545,6 +713,15 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/draft")
     def save_draft(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_reading_edit(
+                work_id,
+                page=request.form.get("page"),
+                per_page=request.form.get("per_page"),
+                save_errors=[lock_result["message"]],
+                status_code=_lock_status_code(lock_result),
+            )
         result = save_work_draft(resolved_workspace_root, work_id, request.form)
         if result is None:
             abort(404)
@@ -563,6 +740,15 @@ def create_app(workspace_root: Path | None = None):
 
     @app.post("/works/<work_id>/final")
     def save_final(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_reading_edit(
+                work_id,
+                page=request.form.get("page"),
+                per_page=request.form.get("per_page"),
+                save_errors=[lock_result["message"]],
+                status_code=_lock_status_code(lock_result),
+            )
         result = save_work_final(resolved_workspace_root, work_id, request.form)
         if result is None:
             abort(404)
@@ -577,10 +763,17 @@ def create_app(workspace_root: Path | None = None):
                 segment_errors=_segment_error_map(segment_index),
                 status_code=400,
             )
-        return redirect(url_for("work_detail", work_id=work_id))
+        return redirect(url_for("work_detail", work_id=work_id, status_notice="final_saved", _anchor="reading-edit-card"))
 
     @app.post("/works/<work_id>/start-reedit")
     def start_reedit(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _render_work_detail(
+                work_id,
+                reading_edit_result=lock_result,
+                status_code=_lock_status_code(lock_result),
+            )
         result = start_reedit_from_final(resolved_workspace_root, work_id, request.form)
         if result is None:
             abort(404)
@@ -603,6 +796,8 @@ def create_app(workspace_root: Path | None = None):
         dictionary_import_result: dict | None = None,
         tts_settings_result: dict | None = None,
         voice_preview_result: dict | None = None,
+        status_message: dict | None = None,
+        reading_edit_result: dict | None = None,
         status_code: int = 200,
     ):
         detail = load_work_detail(
@@ -617,6 +812,11 @@ def create_app(workspace_root: Path | None = None):
         )
         if detail is None:
             abort(404)
+        if generation_result is None:
+            generation_result = load_latest_blocked_generation_result(
+                resolved_workspace_root,
+                work_id,
+            )
         return (
             render_template(
                 "work_detail.html",
@@ -627,6 +827,8 @@ def create_app(workspace_root: Path | None = None):
                 dictionary_import_result=dictionary_import_result,
                 tts_settings_result=tts_settings_result,
                 voice_preview_result=voice_preview_result,
+                status_message=status_message,
+                reading_edit_result=reading_edit_result,
             ),
             status_code,
         )
@@ -719,7 +921,100 @@ def create_app(workspace_root: Path | None = None):
         speaker_id = int(text)
         return speaker_id if speaker_id >= 0 else None
 
+    def _guard_generation_lock_for_post(work_id: str) -> dict | None:
+        work_dir = resolve_work_dir(resolved_workspace_root, work_id)
+        if work_dir is None:
+            return None
+        lock_data = read_generation_lock(work_dir)
+        if lock_data is None:
+            return None
+        if is_generation_lock_stale(lock_data):
+            backup_path = clear_stale_generation_lock(work_dir, expected_lock=lock_data)
+            return _post_lock_result(
+                "stale_cleared",
+                STALE_LOCK_CLEARED_MESSAGE,
+                backup_path=backup_path,
+            )
+        return _post_lock_result("locked", ACTIVE_LOCK_MESSAGE, lock_data=lock_data)
+
     return app
+
+
+def _post_lock_result(
+    status: str,
+    message: str,
+    *,
+    lock_data: dict | None = None,
+    backup_path: Path | None = None,
+) -> dict:
+    errors = [message]
+    if lock_data:
+        operation = lock_data.get("operation")
+        started_at = lock_data.get("started_at")
+        if operation:
+            errors.append(f"operation: {operation}")
+        if started_at:
+            errors.append(f"started_at: {started_at}")
+    if backup_path is not None:
+        errors.append(f"backup_path: {backup_path}")
+    return {
+        "status": status,
+        "ok": False,
+        "message": message,
+        "errors": errors,
+        "committed": False,
+        "meta_status_changed": False,
+    }
+
+
+def _lock_status_code(result: dict) -> int:
+    return 400 if result.get("status") == "stale_cleared" else 409
+
+
+def _generation_status_code(result: dict) -> int:
+    status = result.get("status")
+    if status == "stale_cleared":
+        return 400
+    if status == "locked":
+        return 409
+    return 200
+
+
+def _task_start_status_code(result: dict) -> int:
+    status = result.get("status")
+    if status == "started":
+        return 202
+    if status == "locked":
+        return 409
+    if status == "stale_cleared":
+        return 400
+    if status == "preflight_failed":
+        return 400
+    return 500 if status == "failed" else 400
+
+
+def _json_response(payload: dict, status_code: int):
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response, status_code
+
+
+def _lock_generation_result(work_id: str, result: dict) -> dict:
+    return {
+        "generation_kind": "lock",
+        "status": result.get("status"),
+        "ok": False,
+        "message": result.get("message"),
+        "output_paths": [],
+        "report_path": "",
+        "failed_build_dir": "",
+        "missing_files": [],
+        "missing_images": [],
+        "needs_confirmation": False,
+        "download_ready": False,
+        "dev_log": result.get("errors", []),
+        "work_id": work_id,
+    }
 
 
 def _format_save_error_message(segment_index: str) -> str:
@@ -769,8 +1064,45 @@ def _import_notice_result(import_notice: str | None) -> dict | None:
             "message": "テキスト原稿を取り込みました。",
             "errors": [],
             "warnings": [],
+            "display_scope": "header",
+            "card_anchor": "manuscript-card",
+        }
+    if import_notice == "legacy_imported":
+        return {
+            "status": "success",
+            "title": "旧PEF原稿の取り込み結果",
+            "message": "旧PEF原稿を取り込みました。",
+            "errors": [],
+            "warnings": [],
+            "display_scope": "header",
+            "card_anchor": "manuscript-card",
         }
     return None
+
+
+def _status_notice_result(status_notice: str | None) -> dict | None:
+    notices = {
+        "dictionary_finalized": {
+            "message": "辞書を確定し、編集用データを作成しました。",
+            "card_anchor": "dictionary-card",
+        },
+        "empty_dictionary_processed": {
+            "message": "辞書を使わずに編集用データを作成しました。",
+            "card_anchor": "dictionary-card",
+        },
+        "final_saved": {
+            "message": "編集完了として確定しました。",
+            "card_anchor": "reading-edit-card",
+        },
+    }
+    notice = notices.get(str(status_notice or ""))
+    if not notice:
+        return None
+    return {
+        "status": "success",
+        "message": notice["message"],
+        "card_anchor": notice["card_anchor"],
+    }
 
 
 def _delete_notice_result(delete_notice: str | None) -> dict | None:

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}画像指定 - {{ page.title }} - PEFスタジオ{% endblock %}
 {% block content %}
-  <a class="back-link" href="{{ url_for('work_detail', work_id=page.work_id) }}">← 作品詳細へ戻る</a>
+  <a class="back-link" href="{{ url_for('work_detail', work_id=page.work_id, _anchor='image-card') }}">← 作品詳細へ戻る</a>
 
   <section class="panel">
     <h1>🖼️ 画像指定</h1>
@@ -9,7 +9,7 @@
     <p class="edit-help">画像はEPUBに入りますが、読み上げ本文としては読まれません。</p>
   </section>
 
-  {% if page.result %}
+  {% if page.result and not page.result.segment_index %}
     <section class="panel {% if page.result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
       <p>{{ page.result.message }}</p>
     </section>
@@ -49,8 +49,13 @@
                 <img class="image-preview" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.index) }}" alt="画像プレビュー">
               </div>
             {% endif %}
+            {% if page.result and page.result.segment_index|string == image.index|string %}
+              <div class="card-message {% if page.result.status == 'success' %}card-message--success{% else %}card-message--error{% endif %}">
+                <p>{{ page.result.message }}</p>
+              </div>
+            {% endif %}
             {% if image.is_safe %}
-              <form class="import-form image-upload-form" method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_image', work_id=page.work_id, segment_index=image.index) }}#image-{{ image.index }}">
+              <form class="import-form image-upload-form" method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_image', work_id=page.work_id, segment_index=image.index) }}#image-{{ image.index }}" data-busy-message="処理中です。しばらくお待ちください。">
                 <label class="file-field">
                   <span>画像ファイル（PNG / JPEG）</span>
                   <input type="file" name="image_upload" accept=".png,.jpg,.jpeg,image/png,image/jpeg">

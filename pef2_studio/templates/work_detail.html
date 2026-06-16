@@ -22,6 +22,41 @@
         <span class="workflow-step workflow-breadcrumb-step workflow-{{ step.state }}">{% if step.marker %}<span class="workflow-marker">{{ step.marker }}</span>{% endif %}{{ step.label }}</span>
       {% endfor %}
     </div>
+    {% set header_notice = namespace(result=status_message if status_message is defined else none) %}
+    {% if not header_notice.result and dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.title and dictionary_import_result.display_scope != 'dictionary_card' %}
+      {% set header_notice.result = dictionary_import_result %}
+    {% endif %}
+    {% if not header_notice.result and generation_result is defined and generation_result and generation_result.status == 'cancelled' %}
+      {% set header_notice.result = generation_result %}
+    {% endif %}
+    {% if header_notice.result %}
+      <div class="status-message {% if header_notice.result.status == 'success' or header_notice.result.ok %}status-message--success{% elif header_notice.result.status == 'failed' or header_notice.result.status == 'locked' or header_notice.result.status == 'stale_cleared' %}status-message--error{% elif header_notice.result.status == 'cancelled' %}status-message--info{% else %}status-message--warning{% endif %}">
+        {% if header_notice.result.message %}<p>{{ header_notice.result.message }}</p>{% endif %}
+        {% if header_notice.result.errors %}
+          <ul class="result-list">
+            {% for error in header_notice.result.errors %}<li>{{ error.message or error }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+        {% if header_notice.result.warnings %}
+          <ul class="result-list">
+            {% for warning in header_notice.result.warnings %}<li>{{ warning.message or warning }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+        {% if header_notice.result.failed_stage or header_notice.result.error_type or header_notice.result.error_message or header_notice.result.affected_file or header_notice.result.report_path or header_notice.result.backup_dir %}
+          <details class="debug-info generation-debug">
+            <summary>詳細情報</summary>
+            <dl class="meta-grid">
+              {% if header_notice.result.failed_stage %}<div><dt>failed_stage</dt><dd>{{ header_notice.result.failed_stage }}</dd></div>{% endif %}
+              {% if header_notice.result.error_type %}<div><dt>error_type</dt><dd>{{ header_notice.result.error_type }}</dd></div>{% endif %}
+              {% if header_notice.result.error_message %}<div><dt>error_message</dt><dd>{{ header_notice.result.error_message }}</dd></div>{% endif %}
+              {% if header_notice.result.affected_file %}<div><dt>affected_file</dt><dd>{{ header_notice.result.affected_file }}</dd></div>{% endif %}
+              {% if header_notice.result.report_path %}<div><dt>report_path</dt><dd>{{ header_notice.result.report_path }}</dd></div>{% endif %}
+              {% if header_notice.result.backup_dir %}<div><dt>backup_dir</dt><dd>{{ header_notice.result.backup_dir }}</dd></div>{% endif %}
+            </dl>
+          </details>
+        {% endif %}
+      </div>
+    {% endif %}
     <details class="debug-info">
       <summary>詳細情報</summary>
       <div class="detail-block">
@@ -98,7 +133,7 @@
     </details>
   </section>
 
-  {% if dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.title %}
+  {% if dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.title and dictionary_import_result.display_scope == 'panel' %}
     <section class="panel {% if dictionary_import_result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
       <h2>{{ dictionary_import_result.title or "処理結果" }}</h2>
       {% if dictionary_import_result.message %}<p>{{ dictionary_import_result.message }}</p>{% endif %}
@@ -122,16 +157,26 @@
     </section>
   {% endif %}
 
-  {% if tts_settings_result is defined and tts_settings_result %}
-    <section class="panel {% if tts_settings_result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
-      <h2>音声設定</h2>
-      <p>{{ tts_settings_result.message }}</p>
-    </section>
-  {% endif %}
-
   {% set is_editable = work.mode in ["processed", "draft"] %}
+  {% set manuscript_card_notice = namespace(result=none) %}
+  {% if dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.card_anchor == 'manuscript-card' %}
+    {% set manuscript_card_notice.result = dictionary_import_result %}
+  {% endif %}
+  {% set dictionary_card_notice = namespace(result=none) %}
+  {% if status_message is defined and status_message and status_message.card_anchor == 'dictionary-card' %}
+    {% set dictionary_card_notice.result = status_message %}
+  {% elif dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.message %}
+    {% set dictionary_card_notice.result = dictionary_import_result %}
+  {% endif %}
+  {% set reading_card_notice = namespace(result=none) %}
+  {% if status_message is defined and status_message and status_message.card_anchor == 'reading-edit-card' %}
+    {% set reading_card_notice.result = status_message %}
+  {% elif reading_edit_result is defined and reading_edit_result %}
+    {% set reading_card_notice.result = reading_edit_result %}
+  {% endif %}
+  {% set generation_locked = work.active_generation_lock.active %}
   <section class="hub-grid" aria-label="作品ハブ">
-    <section class="panel hub-card manuscript-card">
+    <section id="manuscript-card" class="panel hub-card manuscript-card">
       <div class="card-heading">
         <h2>🖊️ 原稿</h2>
         <span class="status-pill status-done">{% if work.has_pre_processed %}済み{% else %}未完了{% endif %}</span>
@@ -146,10 +191,14 @@
       <div class="generation-actions">
         <a class="button" href="{{ url_for('works_index') }}">作品一覧へ戻る</a>
       </div>
-      <p class="action-note">v1.1-5では、原稿再取込や原稿差し替えは行いません。</p>
+      {% if manuscript_card_notice.result %}
+        <div class="card-message {% if manuscript_card_notice.result.status == 'success' or manuscript_card_notice.result.ok %}card-message--success{% elif manuscript_card_notice.result.status == 'failed' or manuscript_card_notice.result.status == 'locked' or manuscript_card_notice.result.status == 'stale_cleared' %}card-message--error{% else %}card-message--warning{% endif %}">
+          <p>{{ manuscript_card_notice.result.message }}</p>
+        </div>
+      {% endif %}
     </section>
 
-    <section class="panel hub-card dictionary-card">
+    <section id="dictionary-card" class="panel hub-card dictionary-card">
       <div class="card-heading">
         <h2>📚 辞書</h2>
         {% if work.has_dictionary_review or work.has_processed %}
@@ -177,8 +226,8 @@
       <div class="dictionary-options">
         <div class="dictionary-option">
           {% if work.can_create_empty_dictionary_processed %}
-            <form class="inline-form" method="post" action="{{ url_for('create_empty_dictionary_processed', work_id=work.work_id) }}">
-              <button class="secondary-button" type="submit">辞書を使わずに編集用データを作成</button>
+            <form class="inline-form" method="post" action="{{ url_for('create_empty_dictionary_processed', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+              <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>辞書を使わずに編集用データを作成</button>
             </form>
           {% else %}
             <span class="button disabled-button">辞書を使わずに編集用データを作成</span>
@@ -189,23 +238,23 @@
         <div class="dictionary-option">
           <div class="option-title">作品辞書ファイルを読み込む</div>
           {% if work.can_reset_dictionary_file %}
-            <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}" onsubmit="return confirm('現在の辞書確認用データと編集用データを退避して、新しい辞書ファイルから作り直します。続けますか？');">
+            <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。" onsubmit="return confirm('現在の辞書確認用データと編集用データを退避して、新しい辞書ファイルから作り直します。続けますか？');">
               <label class="file-field">
                 <span>作品辞書ファイル（.json）</span>
                 <input type="file" name="source_dictionary" accept=".json,application/json">
               </label>
               <div class="form-actions">
-                <button class="secondary-button" type="submit">別の作品辞書ファイルを読み込む</button>
+                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>別の作品辞書ファイルを読み込む</button>
               </div>
             </form>
           {% elif work.can_import_dictionary_file %}
-            <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}">
+            <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。">
               <label class="file-field">
                 <span>作品辞書ファイル（.json）</span>
                 <input type="file" name="source_dictionary" accept=".json,application/json">
               </label>
               <div class="form-actions">
-                <button class="secondary-button" type="submit">作品辞書を読み込む</button>
+                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>作品辞書を読み込む</button>
               </div>
             </form>
           {% else %}
@@ -239,8 +288,8 @@
           {% if work.can_open_dictionary_review and not work.has_draft and not work.has_final %}
             <a class="secondary-button" href="{{ url_for('dictionary_review', work_id=work.work_id) }}">辞書を編集する</a>
           {% elif work.can_create_manual_dictionary_review %}
-            <form class="inline-form" method="post" action="{{ url_for('create_manual_dictionary_review', work_id=work.work_id) }}">
-              <button class="secondary-button" type="submit">辞書を編集する</button>
+            <form class="inline-form" method="post" action="{{ url_for('create_manual_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+              <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>辞書を編集する</button>
             </form>
           {% else %}
             <button class="secondary-button" type="button" disabled>辞書を編集する</button>
@@ -250,22 +299,33 @@
           {% if work.can_direct_finalize_dictionary %}
             {% if work.has_dictionary_review_items %}
               <p>読み込んだ辞書をそのまま使う場合は、辞書編集画面を開かずに編集用データを作成できます。</p>
-              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}">
-                <button class="secondary-button" type="submit">この辞書で編集用データを作成</button>
+              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>この辞書で編集用データを作成</button>
               </form>
             {% else %}
               <p>辞書項目はありません。このまま編集用データを作成します。</p>
-              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}">
-                <button class="secondary-button" type="submit">この辞書で編集用データを作成</button>
+              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>この辞書で編集用データを作成</button>
               </form>
             {% endif %}
           {% endif %}
         </div>
       </div>
+      {% if dictionary_card_notice.result %}
+        <div class="card-message {% if dictionary_card_notice.result.status == 'success' or dictionary_card_notice.result.ok %}card-message--success{% elif dictionary_card_notice.result.status == 'failed' or dictionary_card_notice.result.status == 'locked' or dictionary_card_notice.result.status == 'stale_cleared' %}card-message--error{% else %}card-message--warning{% endif %}">
+          {% if dictionary_card_notice.result.message %}<p>{{ dictionary_card_notice.result.message }}</p>{% endif %}
+          {% for error in dictionary_card_notice.result.errors %}<p>{{ error.message or error }}</p>{% endfor %}
+          {% if dictionary_card_notice.result.warnings %}
+            <ul class="result-list">
+              {% for warning in dictionary_card_notice.result.warnings %}<li>{{ warning.message or warning }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endif %}
 
     </section>
 
-    <section class="panel hub-card reading-edit-card">
+    <section id="reading-edit-card" class="panel hub-card reading-edit-card">
       <div class="card-heading">
         <h2>📣 読みと息継ぎ編集</h2>
         {% if work.has_draft %}
@@ -283,13 +343,13 @@
         {% if work.has_draft %}
           <p>途中保存があります。</p>
           <p>続けると、現在の途中保存を確定版で上書きします。</p>
-          <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}">
+          <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}#reading-edit-card" data-busy-message="処理中です。しばらくお待ちください。">
             <input type="hidden" name="confirm" value="1">
-            <button class="secondary-button" type="submit">再編集する</button>
+            <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>再編集する</button>
           </form>
         {% else %}
-          <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}">
-            <button class="secondary-button" type="submit">再編集する</button>
+          <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}#reading-edit-card" data-busy-message="処理中です。しばらくお待ちください。">
+            <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>再編集する</button>
           </form>
         {% endif %}
       {% elif is_editable %}
@@ -313,9 +373,14 @@
         </div>
         <p class="action-note">先に辞書または辞書なしルートで編集用データを作成してください。</p>
       {% endif %}
+      {% if reading_card_notice.result %}
+        <div class="card-message {% if reading_card_notice.result.status == 'success' or reading_card_notice.result.ok %}card-message--success{% elif reading_card_notice.result.status == 'failed' or reading_card_notice.result.status == 'locked' or reading_card_notice.result.status == 'stale_cleared' %}card-message--error{% else %}card-message--warning{% endif %}">
+          <p>{{ reading_card_notice.result.message }}</p>
+        </div>
+      {% endif %}
     </section>
 
-    <section class="panel hub-card image-card">
+    <section id="image-card" class="panel hub-card image-card">
       <div class="card-heading">
         <h2>画像</h2>
         {% if work.image_summary.has_images and work.image_summary.missing_count == 0 %}
@@ -355,7 +420,7 @@
         <span class="status-pill {% if work.tts_settings.has_work_settings %}status-done{% else %}status-pending{% endif %}">{{ work.tts_settings.source_label }}</span>
       </div>
       <p>この作品で使う読み上げ音声を設定します。</p>
-      <form class="inline-form" method="post" action="{{ url_for('save_tts_settings', work_id=work.work_id) }}#voice-settings">
+      <form class="inline-form" method="post" action="{{ url_for('save_tts_settings', work_id=work.work_id) }}#voice-settings" data-busy-message="処理中です。しばらくお待ちください。">
         {% set work_speaker_id = voice_preview_result.speaker_id if voice_preview_result is defined and voice_preview_result and voice_preview_result.speaker_id is not none else work.tts_settings.speaker_id %}
         <div class="settings-category">
           <h3>🔈 声のキャラ</h3>
@@ -365,7 +430,7 @@
               <span>声のキャラID</span>
               <input type="number" name="speaker_id" min="0" step="1" value="{{ work_speaker_id }}">
             </label>
-            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings">試聴する</button>
+            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings" {% if generation_locked %}disabled{% endif %}>試聴する</button>
           </div>
         </div>
         {% if voice_preview_result is defined and voice_preview_result %}
@@ -380,20 +445,27 @@
           </div>
         {% endif %}
         <div class="form-actions">
-          <button class="secondary-button" type="submit">音声設定を保存する</button>
+          <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>音声設定を保存する</button>
         </div>
       </form>
+      {% if tts_settings_result is defined and tts_settings_result %}
+        <div class="card-message {% if tts_settings_result.status == 'success' %}card-message--success{% else %}card-message--error{% endif %}">
+          <p>{{ tts_settings_result.message }}</p>
+        </div>
+      {% endif %}
     </section>
 
-    <section class="panel hub-card media-card">
+    <section id="media-card" class="panel hub-card media-card">
       <div class="card-heading">
         <h2>📖 EPUB</h2>
-        {% if work.can_download_epub %}
-          <span class="status-pill status-done">済み</span>
+        {% if generation_locked %}
+          <span class="status-pill status-current" data-epub-status-pill>生成中</span>
+        {% elif work.can_download_epub and not work.epub_needs_regeneration %}
+          <span class="status-pill status-done" data-epub-status-pill>済み</span>
         {% elif work.can_generate %}
-          <span class="status-pill status-current">生成できます</span>
+          <span class="status-pill status-current" data-epub-status-pill>生成できます</span>
         {% else %}
-          <span class="status-pill status-pending">未完了</span>
+          <span class="status-pill status-pending" data-epub-status-pill>未完了</span>
         {% endif %}
       </div>
       {% if work.can_generate %}
@@ -410,9 +482,9 @@
           {% if work.has_epub %}
             <a class="primary-button download-button" href="{{ url_for('download_epub', work_id=work.work_id) }}">ダウンロード</a>
           {% endif %}
-          {% if not work.can_download_epub %}
-            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}">
-              <button class="button action-button" type="submit">EPUB生成</button>
+          {% if not work.can_download_epub or work.epub_needs_regeneration %}
+            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
+              <button class="button action-button" type="submit" {% if generation_locked %}disabled{% endif %}>EPUB生成</button>
             </form>
           {% endif %}
         </div>
@@ -422,6 +494,19 @@
           <p>作品の長さによっては数分かかります。</p>
           <p>この画面を閉じずにお待ちください。</p>
         </div>
+        <div class="card-message card-message--info" data-tts-progress-message hidden>
+          <p><span data-tts-progress-text>生成しています。</span><span class="loading-dots" aria-hidden="true"></span></p>
+        </div>
+        <details class="debug-info generation-debug" data-tts-progress-details hidden>
+          <summary>詳細情報</summary>
+          <dl class="meta-grid">
+            <div><dt>task_id</dt><dd data-tts-task-id></dd></div>
+            <div><dt>status</dt><dd data-tts-status></dd></div>
+            <div><dt>report_path</dt><dd data-tts-report-path></dd></div>
+            <div><dt>failed_build_dir</dt><dd data-tts-failed-build-dir></dd></div>
+          </dl>
+          <ul class="dev-log-list" data-tts-dev-log></ul>
+        </details>
       {% else %}
         {% if work.has_draft %}
           <p>この作品は再編集中です。EPUBを生成するには、先に編集内容を「編集完了として確定」してください。</p>
@@ -433,91 +518,101 @@
           <span class="button disabled-button">EPUB生成</span>
         </div>
       {% endif %}
-    </section>
-  </section>
+      {% if generation_locked %}
+        <div class="card-message card-message--info is-running">
+          <p><span>{{ work.active_generation_lock.message }}</span><span class="loading-dots" aria-hidden="true"></span></p>
+        </div>
+        <details class="debug-info generation-debug">
+          <summary>詳細情報</summary>
+          <dl class="meta-grid">
+            {% if work.active_generation_lock.operation %}<div><dt>operation</dt><dd>{{ work.active_generation_lock.operation }}</dd></div>{% endif %}
+            {% if work.active_generation_lock.started_at %}<div><dt>started_at</dt><dd>{{ work.active_generation_lock.started_at }}</dd></div>{% endif %}
+            {% if work.active_generation_lock.lock_path %}<div><dt>lock_path</dt><dd>{{ work.active_generation_lock.lock_path }}</dd></div>{% endif %}
+          </dl>
+        </details>
+      {% endif %}
+      {% if generation_result is defined and generation_result and generation_result.status != 'cancelled' %}
+        <div class="generation-result-message card-message {% if generation_result.ok %}card-message--success{% else %}card-message--error{% endif %}">
+          <p>{{ generation_result.message }}</p>
 
-  {% if generation_result is defined and generation_result %}
-    <section class="panel generation-result {% if generation_result.ok %}success-panel{% else %}warning-panel{% endif %}">
-      <div class="generation-result-main">
-        <h2>生成結果</h2>
-        <p>{{ generation_result.message }}</p>
-      </div>
-
-      {% if generation_result.needs_confirmation %}
-        <div class="missing-images-confirm">
-          <table class="missing-images-table">
-            <thead>
-              <tr>
-                <th>index</th>
-                <th>image_file</th>
-                <th>探したパス</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for image in generation_result.missing_images %}
-                <tr>
-                  <td>{{ image.index }}</td>
-                  <td>{{ image.image_file }}</td>
-                  <td>{{ image.searched_path }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          <div class="generation-actions">
-            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}">
-              <input type="hidden" name="allow_missing_images" value="1">
-              <button class="primary-button" type="submit">生成を続ける</button>
-            </form>
-            <a class="secondary-button cancel-button" href="{{ url_for('work_detail', work_id=work.work_id, view='final', generation_notice='missing_images_cancelled') }}">キャンセル</a>
-          </div>
+          {% if generation_result.needs_confirmation %}
+            <div class="missing-images-confirm">
+              <table class="missing-images-table">
+                <thead>
+                  <tr>
+                    <th>index</th>
+                    <th>image_file</th>
+                    <th>探したパス</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for image in generation_result.missing_images %}
+                    <tr>
+                      <td>{{ image.index }}</td>
+                      <td>{{ image.image_file }}</td>
+                      <td>{{ image.searched_path }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              <div class="generation-actions">
+                <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
+                  <input type="hidden" name="allow_missing_images" value="1">
+                  <button class="primary-button" type="submit">生成を続ける</button>
+                </form>
+                <a class="secondary-button cancel-button" href="{{ url_for('work_detail', work_id=work.work_id, view='final', generation_notice='missing_images_cancelled') }}">キャンセル</a>
+              </div>
+            </div>
+          {% endif %}
+        </div>
+        <div class="generation-result">
+          <details class="debug-info generation-debug">
+            <summary>詳細情報</summary>
+            {% if generation_result.missing_files %}
+              <div class="detail-block">
+                <div class="detail-title">missing files</div>
+                <ul class="result-list">
+                  {% for path in generation_result.missing_files %}<li>{{ path }}</li>{% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+            {% if generation_result.missing_images and not generation_result.needs_confirmation %}
+              <div class="detail-block">
+                <div class="detail-title">missing images</div>
+                <ul class="result-list">
+                  {% for image in generation_result.missing_images %}
+                    <li>index {{ image.index }} / {{ image.image_file }} / {{ image.searched_path }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+            {% if generation_result.output_paths %}
+              <div class="detail-block">
+                <div class="detail-title">outputs</div>
+                <ul class="result-list">
+                  {% for path in generation_result.output_paths %}<li>{{ path }}</li>{% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+            {% if generation_result.report_path %}
+              <p>生成レポート: {{ generation_result.report_path }}</p>
+            {% endif %}
+            {% if generation_result.failed_build_dir %}
+              <p>失敗隔離: {{ generation_result.failed_build_dir }}</p>
+            {% endif %}
+            {% if generation_result.dev_log %}
+              <div class="detail-block">
+                <div class="detail-title">log</div>
+                <ul class="dev-log-list">
+                  {% for line in generation_result.dev_log %}<li>{{ line }}</li>{% endfor %}
+                </ul>
+              </div>
+            {% endif %}
+          </details>
         </div>
       {% endif %}
-
-      <details class="debug-info generation-debug">
-        <summary>詳細情報</summary>
-        {% if generation_result.missing_files %}
-          <div class="detail-block">
-            <div class="detail-title">missing files</div>
-            <ul class="result-list">
-              {% for path in generation_result.missing_files %}<li>{{ path }}</li>{% endfor %}
-            </ul>
-          </div>
-        {% endif %}
-        {% if generation_result.missing_images and not generation_result.needs_confirmation %}
-          <div class="detail-block">
-            <div class="detail-title">missing images</div>
-            <ul class="result-list">
-              {% for image in generation_result.missing_images %}
-                <li>index {{ image.index }} / {{ image.image_file }} / {{ image.searched_path }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-        {% endif %}
-        {% if generation_result.output_paths %}
-          <div class="detail-block">
-            <div class="detail-title">outputs</div>
-            <ul class="result-list">
-              {% for path in generation_result.output_paths %}<li>{{ path }}</li>{% endfor %}
-            </ul>
-          </div>
-        {% endif %}
-        {% if generation_result.report_path %}
-          <p>生成レポート: {{ generation_result.report_path }}</p>
-        {% endif %}
-        {% if generation_result.failed_build_dir %}
-          <p>失敗隔離: {{ generation_result.failed_build_dir }}</p>
-        {% endif %}
-        {% if generation_result.dev_log %}
-          <div class="detail-block">
-            <div class="detail-title">log</div>
-            <ul class="dev-log-list">
-              {% for line in generation_result.dev_log %}<li>{{ line }}</li>{% endfor %}
-            </ul>
-          </div>
-        {% endif %}
-      </details>
     </section>
-  {% endif %}
+  </section>
 
   {% if work.errors %}
     <section class="panel warning-panel">
@@ -549,15 +644,223 @@
 
     restoreGenerationScrollPosition();
 
+    const ttsPollState = {
+      timer: null,
+      startedAt: 0,
+      failures: 0
+    };
+    const ttsPollIntervalMs = 3000;
+    const ttsMaxPollingMs = 30 * 60 * 1000;
+    const ttsMaxFailures = 5;
+
+    function ttsProgressElements() {
+      return {
+        box: document.querySelector("[data-tts-progress-message]"),
+        text: document.querySelector("[data-tts-progress-text]"),
+        details: document.querySelector("[data-tts-progress-details]"),
+        taskId: document.querySelector("[data-tts-task-id]"),
+        status: document.querySelector("[data-tts-status]"),
+        reportPath: document.querySelector("[data-tts-report-path]"),
+        failedBuildDir: document.querySelector("[data-tts-failed-build-dir]"),
+        devLog: document.querySelector("[data-tts-dev-log]")
+      };
+    }
+
+    function showTtsProgress(kind, message, progress) {
+      const elements = ttsProgressElements();
+      if (!elements.box || !elements.text) {
+        return;
+      }
+      elements.box.hidden = false;
+      elements.box.classList.remove("card-message--info", "card-message--success", "card-message--error", "is-running");
+      elements.box.classList.add(kind === "success" ? "card-message--success" : kind === "error" ? "card-message--error" : "card-message--info");
+      if (kind === "info") {
+        elements.box.classList.add("is-running");
+      }
+      elements.text.textContent = message;
+      updateTtsProgressDetails(progress);
+    }
+
+    function setEpubStatusRunning() {
+      const pill = document.querySelector("[data-epub-status-pill]");
+      if (!pill) {
+        return;
+      }
+      if (!pill.dataset.originalText) {
+        pill.dataset.originalText = pill.textContent || "";
+        pill.dataset.originalClass = pill.className || "";
+      }
+      pill.textContent = "生成中";
+      pill.className = "status-pill status-current";
+      pill.dataset.epubStatusPill = "";
+    }
+
+    function restoreEpubStatusPill() {
+      const pill = document.querySelector("[data-epub-status-pill]");
+      if (!pill || !pill.dataset.originalText) {
+        return;
+      }
+      pill.textContent = pill.dataset.originalText;
+      pill.className = pill.dataset.originalClass || "status-pill status-current";
+      pill.dataset.epubStatusPill = "";
+    }
+
+    function generationSubmitButtons() {
+      return document.querySelectorAll('form button[type="submit"], form button:not([type])');
+    }
+
+    function disableGenerationSubmitButtons() {
+      generationSubmitButtons().forEach((button) => {
+        if (button.disabled) {
+          return;
+        }
+        button.dataset.generationDisabledByScript = "1";
+        button.disabled = true;
+      });
+    }
+
+    function restoreGenerationSubmitButtons() {
+      generationSubmitButtons().forEach((button) => {
+        if (button.dataset.generationDisabledByScript !== "1") {
+          return;
+        }
+        button.disabled = false;
+        delete button.dataset.generationDisabledByScript;
+      });
+    }
+
+    function updateTtsProgressDetails(progress) {
+      const elements = ttsProgressElements();
+      if (!elements.details || !progress) {
+        return;
+      }
+      const result = progress.result || {};
+      elements.details.hidden = false;
+      if (elements.taskId) elements.taskId.textContent = progress.task_id || "";
+      if (elements.status) elements.status.textContent = progress.status || "";
+      if (elements.reportPath) elements.reportPath.textContent = result.report_path || "";
+      if (elements.failedBuildDir) elements.failedBuildDir.textContent = result.failed_build_dir || "";
+      if (elements.devLog) {
+        elements.devLog.innerHTML = "";
+        (result.dev_log || (progress.error && progress.error.details) || []).slice(0, 5).forEach((line) => {
+          const item = document.createElement("li");
+          item.textContent = String(line);
+          elements.devLog.appendChild(item);
+        });
+      }
+    }
+
+    function stopTtsPolling() {
+      if (ttsPollState.timer !== null) {
+        clearTimeout(ttsPollState.timer);
+        ttsPollState.timer = null;
+      }
+    }
+
+    async function pollTtsProgress(form, taskId) {
+      const template = form.dataset.ttsProgressUrlTemplate || "";
+      const url = template.replace("__TASK_ID__", encodeURIComponent(taskId));
+      if (!url) {
+        showTtsProgress("error", "進捗情報を確認できませんでした。", { task_id: taskId, status: "invalid_task_id" });
+        return;
+      }
+      if (Date.now() - ttsPollState.startedAt > ttsMaxPollingMs) {
+        showTtsProgress("error", "進捗確認を停止しました。画面を再読み込みしてください。", { task_id: taskId, status: "polling_timeout" });
+        return;
+      }
+      try {
+        const response = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          showTtsProgress("error", data.message || "進捗情報を確認できませんでした。", data.progress || { task_id: taskId, status: data.status || "" });
+          return;
+        }
+        ttsPollState.failures = 0;
+        const progress = data.progress || {};
+        if (progress.status === "completed") {
+          if (progress.next_action_status === "blocked" && form.dataset.ttsMode === "before-submit") {
+            form.dataset.ttsCompleted = "1";
+            form.requestSubmit();
+            return;
+          }
+          showTtsProgress("success", progress.message || "音声生成が完了しました。", progress);
+          if (progress.next_action_status === "completed") {
+            window.location.reload();
+            return;
+          }
+          if (form.dataset.ttsMode === "before-submit" && !progress.next_action_status) {
+            form.dataset.ttsCompleted = "1";
+            form.requestSubmit();
+          }
+          return;
+        }
+        if (progress.status === "failed" || progress.status === "abandoned") {
+          showTtsProgress("error", progress.message || "音声生成に失敗しました。", progress);
+          return;
+        }
+        showTtsProgress("info", progress.message || "生成しています。", progress);
+      } catch (error) {
+        ttsPollState.failures += 1;
+        if (ttsPollState.failures >= ttsMaxFailures) {
+          showTtsProgress("error", "進捗確認に失敗しました。通信状態を確認して再読み込みしてください。", { task_id: taskId, status: "polling_failed" });
+          return;
+        }
+      }
+      ttsPollState.timer = window.setTimeout(() => pollTtsProgress(form, taskId), ttsPollIntervalMs);
+    }
+
+    async function startTtsPolling(form) {
+      stopTtsPolling();
+      ttsPollState.startedAt = Date.now();
+      ttsPollState.failures = 0;
+      setEpubStatusRunning();
+      showTtsProgress("info", "生成しています。", null);
+      disableGenerationSubmitButtons();
+      try {
+        const formData = new FormData();
+        if (form.dataset.ttsNextAction) {
+          formData.append("next_action", form.dataset.ttsNextAction);
+        }
+        const response = await fetch(form.dataset.ttsStartUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" },
+          body: formData
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok || !data.task_id) {
+          showTtsProgress("error", data.message || "音声生成に失敗しました。", data.progress || null);
+          restoreEpubStatusPill();
+          restoreGenerationSubmitButtons();
+          return;
+        }
+        showTtsProgress("info", data.message || "生成しています。", data.progress || null);
+        await pollTtsProgress(form, data.task_id);
+      } catch (error) {
+        showTtsProgress("error", "音声生成に失敗しました。", null);
+        restoreEpubStatusPill();
+        restoreGenerationSubmitButtons();
+      }
+    }
+
+    window.addEventListener("beforeunload", stopTtsPolling);
+
     document.querySelectorAll(".generation-submit-form").forEach((form) => {
-      form.addEventListener("submit", () => {
+      form.addEventListener("submit", (event) => {
+        const shouldRunTtsFirst = Boolean(form.dataset.ttsStartUrl) && form.dataset.ttsCompleted !== "1";
+        if (shouldRunTtsFirst) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          sessionStorage.setItem(generationScrollKey, String(window.scrollY));
+          startTtsPolling(form);
+          return;
+        }
         sessionStorage.setItem(generationScrollKey, String(window.scrollY));
+        setEpubStatusRunning();
         document.querySelectorAll("[data-generation-wait]").forEach((item) => {
           item.hidden = false;
         });
-        form.querySelectorAll("button").forEach((button) => {
-          button.disabled = true;
-        });
+        disableGenerationSubmitButtons();
       });
     });
   </script>

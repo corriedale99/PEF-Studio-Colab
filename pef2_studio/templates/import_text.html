@@ -13,7 +13,7 @@
       </section>
     {% endif %}
 
-    <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_text') }}">
+    <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_text') }}" data-busy-message="処理中です。しばらくお待ちください。">
       <label class="file-field">
         <span>作品名</span>
         <input type="text" name="title" value="{{ form_data.title }}">

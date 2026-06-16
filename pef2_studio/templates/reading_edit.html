@@ -4,7 +4,7 @@
   {% set is_editable = work.mode in ["processed", "draft"] %}
 
   <section class="panel work-header">
-    <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id) }}">← 作品詳細へ戻る</a>
+  <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id, _anchor='reading-edit-card') }}">← 作品詳細へ戻る</a>
     <h1>📣 読みと息継ぎ編集</h1>
     <div class="status-summary">
       <div class="status-label">状態: {{ work.status_label }}</div>
@@ -119,7 +119,7 @@
 
     {% if work.segments %}
       {% if is_editable %}
-        <form id="segment-edit-form" class="draft-form" method="post" action="{{ url_for('save_draft', work_id=work.work_id) }}">
+        <form id="segment-edit-form" class="draft-form" method="post" action="{{ url_for('save_draft', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
           <input type="hidden" name="page" value="{{ work.pagination.page }}">
           <input type="hidden" name="per_page" value="{{ work.pagination.per_page }}">
       {% endif %}
