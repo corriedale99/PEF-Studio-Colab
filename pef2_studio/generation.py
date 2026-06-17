@@ -33,7 +33,11 @@ from pef2_studio.generation_progress import (
     update_progress,
     write_progress,
 )
-from pef2_studio.workspace_view import resolve_work_dir
+from pef2_studio.workspace_view import (
+    create_ai_dictionary_review_submission,
+    load_ai_dictionary_review_confirmation,
+    resolve_work_dir,
+)
 
 
 FINAL_REQUIRED_MESSAGE = "まだ原稿が確定していないため、音声を生成できません。先に編集画面で「編集完了として確定」を押してください。"
@@ -46,6 +50,8 @@ EPUB_FAILED_MESSAGE = "EPUBの生成に失敗しました。既存のEPUBがあ�
 MISSING_IMAGES_CANCELLED_MESSAGE = "画像ファイルが足りないため、EPUB生成を中止しました。画像を追加してから、もう一度EPUB生成を実行してください。"
 MISSING_IMAGES_ALLOWED_MESSAGE = "EPUBを生成しました。ただし、一部の画像が見つからなかったため、本文に代替表示を入れています。"
 MISSING_IMAGES_MESSAGE = "画像ファイルが足りませんが、そのままEPUBを生成しますか？"
+AI_DICTIONARY_RUNNING_MESSAGE = "AI辞書候補を作成しています。"
+AI_DICTIONARY_FAILED_MESSAGE = "AI辞書候補を作成できませんでした。時間をおいてもう一度試すか、手動で辞書項目を追加してください。"
 
 
 def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
@@ -156,6 +162,86 @@ def load_tts_generation_progress(workspace_root: Path, work_id: str, task_id: st
     return read_progress(work_dir, task_id)
 
 
+def start_ai_dictionary_review_task(workspace_root: Path, work_id: str) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+
+    confirmation = load_ai_dictionary_review_confirmation(workspace_root, work_id)
+    if confirmation is None:
+        return None
+    if confirmation.get("status") == "blocked":
+        result = confirmation.get("result") or {}
+        return _task_start_failed(
+            _preflight_result(
+                "ai_dictionary",
+                work_dir,
+                str(result.get("message") or AI_DICTIONARY_FAILED_MESSAGE),
+                _ai_dictionary_preflight_lines(result),
+            )
+        )
+
+    lock_result = acquire_generation_lock(work_dir, "ai_dictionary")
+    if not lock_result.get("ok"):
+        return _task_start_failed(_lock_result("ai_dictionary", work_dir, lock_result))
+
+    lock_data = lock_result.get("lock")
+    task_id = create_task_id("ai_dictionary")
+    progress = new_progress(
+        work_dir,
+        task_id=task_id,
+        operation="ai_dictionary",
+        status="running",
+        phase="AI辞書候補を作成中",
+        message=AI_DICTIONARY_RUNNING_MESSAGE,
+        lock_started_at=str(lock_data.get("started_at") or "") if isinstance(lock_data, dict) else "",
+    )
+    write_progress(work_dir, progress)
+
+    thread = Thread(
+        target=_run_ai_dictionary_review_task,
+        name=f"pef2-ai-dictionary-{task_id}",
+        args=(Path(workspace_root), work_dir, task_id, lock_data),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception as error:
+        update_progress(
+            work_dir,
+            task_id,
+            status="failed",
+            phase="AI辞書候補作成失敗",
+            message=AI_DICTIONARY_FAILED_MESSAGE,
+            error={"message": f"{type(error).__name__}: {error}"},
+        )
+        release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        return {
+            "ok": False,
+            "status": "failed",
+            "message": AI_DICTIONARY_FAILED_MESSAGE,
+            "task_id": task_id,
+            "progress": read_progress(work_dir, task_id),
+        }
+
+    return {
+        "ok": True,
+        "status": "started",
+        "message": AI_DICTIONARY_RUNNING_MESSAGE,
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
+def load_ai_dictionary_review_progress(workspace_root: Path, work_id: str, task_id: str) -> dict | None:
+    if not is_valid_task_id(task_id, operation="ai_dictionary"):
+        return None
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    return read_progress(work_dir, task_id)
+
+
 def load_latest_blocked_generation_result(workspace_root: Path, work_id: str) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
@@ -244,6 +330,39 @@ def _run_tts_generation_task(
             release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
 
 
+def _run_ai_dictionary_review_task(
+    workspace_root: Path,
+    work_dir: Path,
+    task_id: str,
+    lock_data: object,
+) -> None:
+    try:
+        try:
+            result = create_ai_dictionary_review_submission(workspace_root, work_dir.name)
+            if result is None:
+                result = _preflight_result(
+                    "ai_dictionary",
+                    work_dir,
+                    "作品が見つかりません。",
+                    ["work directory was not found."],
+                )
+        except Exception as error:
+            result = _exception_result("ai_dictionary", work_dir, error)
+
+        status = "completed" if result.get("status") == "success" or result.get("ok") else "failed"
+        update_progress(
+            work_dir,
+            task_id,
+            status=status,
+            phase="AI辞書候補作成完了" if status == "completed" else "AI辞書候補作成失敗",
+            message=str(result.get("message") or (AI_DICTIONARY_RUNNING_MESSAGE if status == "completed" else AI_DICTIONARY_FAILED_MESSAGE)),
+            result=_ai_dictionary_progress_result(work_dir, result),
+            error=None if status == "completed" else _ai_dictionary_progress_error(result),
+        )
+    finally:
+        release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+
+
 def _tts_generation_result(workspace_root: Path, work_dir: Path, report: dict) -> dict:
     report_path = work_dir / "audio" / TTS_BUILD_REPORT_FILENAME
     if report.get("ok"):
@@ -316,6 +435,60 @@ def _progress_error(result: dict) -> dict:
         "message": result.get("message") or "音声生成に失敗しました。",
         "details": list(result.get("dev_log") or [])[:5],
     }
+
+
+def _ai_dictionary_progress_result(work_dir: Path, result: dict) -> dict:
+    raw_path = work_dir / "step5" / "gemini_review_raw.json"
+    raw = read_json(raw_path, default={}) if raw_path.is_file() else {}
+    raw_chunks = raw.get("chunks") if isinstance(raw, dict) else []
+    warnings = result.get("warnings") or []
+    return {
+        "generation_kind": "ai_dictionary",
+        "status": result.get("status"),
+        "ok": result.get("status") == "success" or bool(result.get("ok")),
+        "message": result.get("message") or "",
+        "candidate_count": _safe_int(result.get("candidate_count"), _safe_int(raw.get("candidate_count") if isinstance(raw, dict) else 0)),
+        "chunk_count": _safe_int(result.get("chunk_count"), len(raw_chunks) if isinstance(raw_chunks, list) else 0),
+        "draft_count": _safe_int(result.get("draft_count")),
+        "api_called": bool(result.get("api_called") if "api_called" in result else raw.get("gemini_api_called") if isinstance(raw, dict) else False),
+        "skip_reason": result.get("skip_reason") or (raw.get("skip_reason") if isinstance(raw, dict) else ""),
+        "failed_count": _safe_int(result.get("failed_count"), _safe_int(raw.get("failed_count") if isinstance(raw, dict) else 0)),
+        "timeout_count": _safe_int(result.get("timeout_count"), _safe_int(raw.get("timeout_count") if isinstance(raw, dict) else 0)),
+        "raw_path": _rel_path(raw_path) if raw_path.exists() else "",
+        "draft_path": _rel_work_path(work_dir, workspace_paths.WORK_DICTIONARY_DRAFT_FILENAME) if (work_dir / workspace_paths.WORK_DICTIONARY_DRAFT_FILENAME).exists() else "",
+        "log_path": _rel_work_path(work_dir, "step5", "gemini_review_log.jsonl") if (work_dir / "step5" / "gemini_review_log.jsonl").exists() else "",
+        "backup_dir": str(result.get("backup_dir") or ""),
+        "warnings": warnings[:5] if isinstance(warnings, list) else [],
+    }
+
+
+def _ai_dictionary_progress_error(result: dict) -> dict:
+    details = []
+    for key in ("failed_stage", "error_type", "affected_file"):
+        value = result.get(key)
+        if value:
+            details.append(f"{key}: {value}")
+    return {
+        "message": result.get("message") or AI_DICTIONARY_FAILED_MESSAGE,
+        "error_type": result.get("error_type") or "",
+        "details": details[:5],
+    }
+
+
+def _ai_dictionary_preflight_lines(result: dict) -> list[str]:
+    lines = ["preflightで停止しました。"]
+    for key in ("failed_stage", "error_type", "affected_file"):
+        value = result.get(key)
+        if value:
+            lines.append(f"{key}: {value}")
+    return lines
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
 
 
 def _is_blocked_epub_progress(progress: object) -> bool:

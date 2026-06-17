@@ -64,20 +64,22 @@ from pef2_engine.tts_generator import (
     WORKSPACE_TEMP_DIRNAME,
 )
 from pef2_engine.generation_lock import (
-    ACTIVE_LOCK_MESSAGE,
     STALE_LOCK_CLEARED_MESSAGE,
+    active_generation_lock_message,
     clear_stale_generation_lock,
     is_generation_lock_stale,
     read_generation_lock,
 )
 from pef2_studio.generation import (
     build_generation_notice_result,
+    load_ai_dictionary_review_progress,
     load_latest_blocked_generation_result,
     load_tts_generation_progress,
     run_epub_generation,
     run_tts_generation,
     run_voice_preview_generation,
     run_workspace_voice_preview_generation,
+    start_ai_dictionary_review_task,
     start_tts_generation_task,
 )
 from pef2_studio.generation_progress import is_valid_task_id
@@ -512,6 +514,48 @@ def create_app(workspace_root: Path | None = None):
             confirm=page_data,
         )
 
+    @app.post("/works/<work_id>/ai-dictionary-review/start")
+    def start_ai_dictionary_review(work_id: str):
+        result = start_ai_dictionary_review_task(resolved_workspace_root, work_id)
+        if result is None:
+            abort(404)
+        return _json_response(result, _task_start_status_code(result))
+
+    @app.get("/works/<work_id>/ai-dictionary-review/progress/<task_id>")
+    def ai_dictionary_review_progress(work_id: str, task_id: str):
+        if not is_valid_task_id(task_id, operation="ai_dictionary"):
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "invalid_task_id",
+                    "message": "進捗情報を確認できませんでした。",
+                },
+                400,
+            )
+        progress = load_ai_dictionary_review_progress(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if progress is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "message": "進捗情報が見つかりません。画面を再読み込みしてください。",
+                },
+                404,
+            )
+        return _json_response(
+            {
+                "ok": True,
+                "status": progress.get("status"),
+                "message": progress.get("message"),
+                "progress": progress,
+            },
+            200,
+        )
+
     @app.post("/works/<work_id>/import-legacy-dictionary")
     def import_legacy_dictionary(work_id: str):
         lock_result = _guard_generation_lock_for_post(work_id)
@@ -817,6 +861,8 @@ def create_app(workspace_root: Path | None = None):
                 resolved_workspace_root,
                 work_id,
             )
+        if dictionary_import_result is None:
+            dictionary_import_result = _ai_dictionary_completion_notice(work_id)
         return (
             render_template(
                 "work_detail.html",
@@ -832,6 +878,31 @@ def create_app(workspace_root: Path | None = None):
             ),
             status_code,
         )
+
+    def _ai_dictionary_completion_notice(work_id: str) -> dict | None:
+        task_id = request.args.get("ai_dictionary_task", "")
+        if not is_valid_task_id(task_id, operation="ai_dictionary"):
+            return None
+        progress = load_ai_dictionary_review_progress(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if not progress or progress.get("status") != "completed":
+            return None
+        result = progress.get("result") if isinstance(progress.get("result"), dict) else {}
+        try:
+            draft_count = int(result.get("draft_count") or 0)
+        except (TypeError, ValueError):
+            draft_count = 0
+        return {
+            "status": "success",
+            "ok": True,
+            "title": "AI辞書候補",
+            "message": "辞書採用語は0件でした。" if draft_count == 0 else "辞書生成が終わりました。",
+            "card_anchor": "dictionary-card",
+            "display_scope": "dictionary_card",
+        }
 
     def _render_reading_edit(
         work_id: str,
@@ -935,7 +1006,11 @@ def create_app(workspace_root: Path | None = None):
                 STALE_LOCK_CLEARED_MESSAGE,
                 backup_path=backup_path,
             )
-        return _post_lock_result("locked", ACTIVE_LOCK_MESSAGE, lock_data=lock_data)
+        return _post_lock_result(
+            "locked",
+            active_generation_lock_message(lock_data),
+            lock_data=lock_data,
+        )
 
     return app
 

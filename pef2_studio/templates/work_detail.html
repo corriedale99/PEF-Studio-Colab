@@ -165,7 +165,7 @@
   {% set dictionary_card_notice = namespace(result=none) %}
   {% if status_message is defined and status_message and status_message.card_anchor == 'dictionary-card' %}
     {% set dictionary_card_notice.result = status_message %}
-  {% elif dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.message %}
+  {% elif dictionary_import_result is defined and dictionary_import_result and (dictionary_import_result.message or dictionary_import_result.errors) and (not dictionary_import_result.card_anchor or dictionary_import_result.card_anchor == 'dictionary-card' or dictionary_import_result.display_scope == 'dictionary_card') %}
     {% set dictionary_card_notice.result = dictionary_import_result %}
   {% endif %}
   {% set reading_card_notice = namespace(result=none) %}
@@ -239,34 +239,25 @@
           <div class="option-title">作品辞書ファイルを読み込む</div>
           {% if work.can_reset_dictionary_file %}
             <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。" onsubmit="return confirm('現在の辞書確認用データと編集用データを退避して、新しい辞書ファイルから作り直します。続けますか？');">
-              <label class="file-field">
-                <span>作品辞書ファイル（.json）</span>
-                <input type="file" name="source_dictionary" accept=".json,application/json">
+              <label class="file-picker-button">
+                <span>ファイルを選択</span>
+                <input type="file" name="source_dictionary" accept=".json,application/json" data-auto-submit-file {% if generation_locked %}disabled{% endif %}>
               </label>
-              <div class="form-actions">
-                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>別の作品辞書ファイルを読み込む</button>
-              </div>
             </form>
           {% elif work.can_import_dictionary_file %}
             <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。">
-              <label class="file-field">
-                <span>作品辞書ファイル（.json）</span>
-                <input type="file" name="source_dictionary" accept=".json,application/json">
+              <label class="file-picker-button">
+                <span>ファイルを選択</span>
+                <input type="file" name="source_dictionary" accept=".json,application/json" data-auto-submit-file {% if generation_locked %}disabled{% endif %}>
               </label>
-              <div class="form-actions">
-                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>作品辞書を読み込む</button>
-              </div>
             </form>
           {% else %}
-            <button class="secondary-button" type="button" disabled>作品辞書を読み込む</button>
+            <button class="secondary-button" type="button" disabled>ファイルを選択</button>
           {% endif %}
           <p>以前作った作品辞書ファイルを読み込んで、今回の作品の辞書候補にします。</p>
           <p>旧PEFの辞書ファイルも読み込めます。</p>
           {% if work.dictionary_file_import_block_reason %}
             <p class="action-note">{{ work.dictionary_file_import_block_reason }}</p>
-          {% endif %}
-          {% if dictionary_import_result is defined and dictionary_import_result and not dictionary_import_result.title %}
-            {% for error in dictionary_import_result.errors %}<p class="action-note">{{ error }}</p>{% endfor %}
           {% endif %}
         </div>
 
@@ -296,20 +287,14 @@
             {% if not work.can_open_dictionary_review %}<span class="future-label">今後対応</span>{% endif %}
           {% endif %}
           <p>作品辞書を確認・編集します。ない場合は新しく作ります。すでに「読みと息継ぎの編集」をした場合は、再編集できません。</p>
-          {% if work.can_direct_finalize_dictionary %}
-            {% if work.has_dictionary_review_items %}
-              <p>読み込んだ辞書をそのまま使う場合は、辞書編集画面を開かずに編集用データを作成できます。</p>
-              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
-                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>この辞書で編集用データを作成</button>
-              </form>
-            {% else %}
-              <p>辞書項目はありません。このまま編集用データを作成します。</p>
-              <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
-                <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>この辞書で編集用データを作成</button>
-              </form>
-            {% endif %}
-          {% endif %}
         </div>
+        {% if work.can_direct_finalize_dictionary %}
+          <div class="dictionary-direct-action">
+            <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+              <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>この辞書で編集用データを作成</button>
+            </form>
+          </div>
+        {% endif %}
       </div>
       {% if dictionary_card_notice.result %}
         <div class="card-message {% if dictionary_card_notice.result.status == 'success' or dictionary_card_notice.result.ok %}card-message--success{% elif dictionary_card_notice.result.status == 'failed' or dictionary_card_notice.result.status == 'locked' or dictionary_card_notice.result.status == 'stale_cleared' %}card-message--error{% else %}card-message--warning{% endif %}">
@@ -861,6 +846,23 @@
           item.hidden = false;
         });
         disableGenerationSubmitButtons();
+      });
+    });
+
+    document.querySelectorAll("[data-auto-submit-file]").forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!input.files || input.files.length === 0 || input.disabled) {
+          return;
+        }
+        const form = input.form;
+        if (!form) {
+          return;
+        }
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          form.submit();
+        }
       });
     });
   </script>

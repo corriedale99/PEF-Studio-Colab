@@ -35,7 +35,7 @@ from pef2_engine.processed_editing import (
     edit_text_to_audio,
 )
 from pef2_engine.gemini_dictionary_review import MAX_REVIEW_TERMS
-from pef2_engine.generation_lock import ACTIVE_LOCK_MESSAGE, generation_lock_path, read_generation_lock
+from pef2_engine.generation_lock import active_generation_lock_message, generation_lock_path, read_generation_lock
 from pef2_engine.step5_dictionary_draft import (
     GEMINI_REVIEW_RAW_FILENAME,
     STEP5_DIRNAME,
@@ -884,14 +884,20 @@ def import_legacy_dictionary_upload(
     except LegacyDictionaryImportValidationError as error:
         return {
             "status": "failed",
+            "title": "作品辞書読み込み",
             "errors": [_legacy_dictionary_import_error_message(error)],
             "warnings": [],
+            "display_scope": "dictionary_card",
+            "card_anchor": "dictionary-card",
         }
     except Exception as error:
         return {
             "status": "failed",
+            "title": "作品辞書読み込み",
             "errors": [f"作品辞書ファイルを読み込めませんでした。{type(error).__name__}: {error}"],
             "warnings": [],
+            "display_scope": "dictionary_card",
+            "card_anchor": "dictionary-card",
         }
 
     return {
@@ -2165,7 +2171,7 @@ def _active_generation_lock_info(work_dir: Path) -> dict:
     return {
         "active": True,
         "message": "生成中です。完了後に再読み込みしてください。",
-        "details_message": ACTIVE_LOCK_MESSAGE,
+        "details_message": active_generation_lock_message(lock_data),
         "operation": str(lock_data.get("operation") or ""),
         "started_at": str(lock_data.get("started_at") or ""),
         "lock_path": str(generation_lock_path(work_dir)),
@@ -3095,6 +3101,8 @@ def _upload_bytes(upload) -> bytes:
 def _legacy_dictionary_import_error_message(
     error: LegacyDictionaryImportValidationError,
 ) -> str:
+    if error.code == "invalid_top_level":
+        return "正しい辞書フォーマットのファイルを指定してください"
     if error.item_index is None:
         return error.message
     return f"{error.message} item {error.item_index}"

@@ -153,6 +153,10 @@ h2 {
   margin: 0;
 }
 
+.busy-submitter[disabled] {
+  display: none;
+}
+
 .status-message .result-list,
 .card-message .result-list {
   margin-top: 6px;
@@ -308,6 +312,34 @@ h2 {
   font: inherit;
 }
 
+.file-picker-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 14px;
+  border: 1px solid #1f4f7a;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f4f7a;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+}
+
+.file-picker-button input[type="file"] {
+  display: none;
+}
+
+.file-picker-button:has(input:disabled) {
+  border-color: #cdd5df;
+  color: #98a2b3;
+  cursor: not-allowed;
+}
+
 .form-actions {
   display: flex;
   flex-wrap: wrap;
@@ -456,6 +488,33 @@ h2 {
   margin: 6px 0 0;
 }
 
+.dictionary-card .dictionary-options {
+  overflow: hidden;
+}
+
+.dictionary-card .dictionary-option {
+  min-width: 0;
+}
+
+.dictionary-card .inline-form,
+.dictionary-card .import-form,
+.dictionary-card .form-actions,
+.dictionary-card .file-field,
+.dictionary-card .file-picker-button {
+  max-width: 100%;
+}
+
+.dictionary-card .secondary-button,
+.dictionary-card .disabled-button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.dictionary-card input[type="file"] {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .image-summary-list {
   margin-top: 12px;
 }
@@ -560,6 +619,20 @@ h2 {
   margin-top: 14px;
 }
 
+.dictionary-direct-action {
+  grid-column: 2 / -1;
+  display: flex;
+  justify-content: center;
+}
+
+.dictionary-direct-action .inline-form {
+  width: min(100%, 520px);
+}
+
+.dictionary-direct-action .secondary-button {
+  width: 100%;
+}
+
 .dictionary-option,
 .legacy-dictionary-box {
   border: 1px solid #edf0f4;
@@ -570,6 +643,12 @@ h2 {
 
 .legacy-dictionary-box {
   margin-top: 14px;
+}
+
+@media (max-width: 900px) {
+  .dictionary-direct-action {
+    grid-column: 1 / -1;
+  }
 }
 
 .option-title {

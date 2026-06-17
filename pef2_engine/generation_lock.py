@@ -12,8 +12,12 @@ LOCK_FILENAME = ".generation_lock"
 STALE_AFTER = timedelta(hours=6)
 JST = timezone(timedelta(hours=9))
 
-ACTIVE_LOCK_MESSAGE = "この作品は現在、音声またはEPUBを生成中です。生成が終わってからもう一度操作してください。"
 STALE_LOCK_CLEARED_MESSAGE = "前回の生成中ロックが残っていたため解除しました。もう一度操作してください。"
+ACTIVE_LOCK_MESSAGES = {
+    "tts": "この作品は現在、音声を生成中です。生成が終わってからもう一度操作してください。",
+    "epub": "この作品は現在、EPUBを生成中です。生成が終わってからもう一度操作してください。",
+    "ai_dictionary": "この作品は現在、AI辞書候補を作成中です。作成が終わってからもう一度操作してください。",
+}
 
 
 def generation_lock_path(work_dir: Path) -> Path:
@@ -29,6 +33,16 @@ def read_generation_lock(work_dir: Path) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return {"invalid": True}
     return data if isinstance(data, dict) else {"invalid": True}
+
+
+def active_generation_lock_message(lock_data: dict | None = None) -> str:
+    if not isinstance(lock_data, dict):
+        return "この作品は現在、生成処理中です。生成が終わってからもう一度操作してください。"
+    operation = str(lock_data.get("operation") or "")
+    return ACTIVE_LOCK_MESSAGES.get(
+        operation,
+        "この作品は現在、生成処理中です。生成が終わってからもう一度操作してください。",
+    )
 
 
 def is_generation_lock_stale(lock_data: dict | None, now: datetime | None = None) -> bool:
@@ -77,14 +91,14 @@ def acquire_generation_lock(
         return {
             "status": "locked",
             "ok": False,
-            "message": ACTIVE_LOCK_MESSAGE,
+            "message": active_generation_lock_message(existing),
             "lock": existing,
         }
     except OSError as error:
         return {
             "status": "failed",
             "ok": False,
-            "message": ACTIVE_LOCK_MESSAGE,
+            "message": active_generation_lock_message(),
             "error": f"{type(error).__name__}: {error}",
         }
 

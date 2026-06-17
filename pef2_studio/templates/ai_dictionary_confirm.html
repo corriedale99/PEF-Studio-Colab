@@ -10,12 +10,209 @@
     {% if confirm.has_dictionary_review %}
       <p class="action-note">現在の辞書候補は退避され、新しいAI辞書候補に置き換わります。</p>
     {% endif %}
-    <p class="form-help">この操作ではGemini APIを使って読み候補を作成します。<br>無料枠の範囲でも、API使用量は発生します。</p>
     <div class="form-actions">
-      <form method="post" action="{{ url_for('create_ai_dictionary_review', work_id=confirm.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。">
+      <form method="post" action="{{ url_for('create_ai_dictionary_review', work_id=confirm.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。" data-ai-dictionary-form data-ai-dictionary-start-url="{{ url_for('start_ai_dictionary_review', work_id=confirm.work_id) }}" data-ai-dictionary-progress-url-template="{{ url_for('ai_dictionary_review_progress', work_id=confirm.work_id, task_id='__TASK_ID__') }}" data-ai-dictionary-complete-url="{{ url_for('work_detail', work_id=confirm.work_id, _anchor='dictionary-card') }}">
         <button class="secondary-button" type="submit">AIで辞書候補を作る</button>
       </form>
       <a class="button cancel-button" href="{{ url_for('work_detail', work_id=confirm.work_id, _anchor='dictionary-card') }}">キャンセル</a>
     </div>
+    <div class="card-message card-message--info" data-ai-dictionary-progress-message hidden>
+      <p><span data-ai-dictionary-progress-text>AI辞書候補を作成しています。</span><span class="loading-dots" aria-hidden="true"></span></p>
+      <p>しばらくお待ちください。</p>
+    </div>
+    <details class="debug-info generation-debug" data-ai-dictionary-progress-details hidden>
+      <summary>詳細情報</summary>
+      <dl class="meta-grid">
+        <div><dt>task_id</dt><dd data-ai-dictionary-task-id></dd></div>
+        <div><dt>status</dt><dd data-ai-dictionary-status></dd></div>
+        <div><dt>candidate_count</dt><dd data-ai-dictionary-candidate-count></dd></div>
+        <div><dt>chunk_count</dt><dd data-ai-dictionary-chunk-count></dd></div>
+        <div><dt>draft_count</dt><dd data-ai-dictionary-draft-count></dd></div>
+        <div><dt>failed_count</dt><dd data-ai-dictionary-failed-count></dd></div>
+        <div><dt>timeout_count</dt><dd data-ai-dictionary-timeout-count></dd></div>
+        <div><dt>raw_path</dt><dd data-ai-dictionary-raw-path></dd></div>
+        <div><dt>draft_path</dt><dd data-ai-dictionary-draft-path></dd></div>
+        <div><dt>log_path</dt><dd data-ai-dictionary-log-path></dd></div>
+        <div><dt>error_type</dt><dd data-ai-dictionary-error-type></dd></div>
+      </dl>
+    </details>
   </section>
+  <script>
+    const aiDictionaryPollState = {
+      timer: null,
+      startedAt: 0,
+      failures: 0
+    };
+    const aiDictionaryPollIntervalMs = 3000;
+    const aiDictionaryMaxPollingMs = 30 * 60 * 1000;
+    const aiDictionaryMaxFailures = 5;
+
+    function aiDictionaryElements() {
+      return {
+        box: document.querySelector("[data-ai-dictionary-progress-message]"),
+        text: document.querySelector("[data-ai-dictionary-progress-text]"),
+        details: document.querySelector("[data-ai-dictionary-progress-details]"),
+        taskId: document.querySelector("[data-ai-dictionary-task-id]"),
+        status: document.querySelector("[data-ai-dictionary-status]"),
+        candidateCount: document.querySelector("[data-ai-dictionary-candidate-count]"),
+        chunkCount: document.querySelector("[data-ai-dictionary-chunk-count]"),
+        draftCount: document.querySelector("[data-ai-dictionary-draft-count]"),
+        failedCount: document.querySelector("[data-ai-dictionary-failed-count]"),
+        timeoutCount: document.querySelector("[data-ai-dictionary-timeout-count]"),
+        rawPath: document.querySelector("[data-ai-dictionary-raw-path]"),
+        draftPath: document.querySelector("[data-ai-dictionary-draft-path]"),
+        logPath: document.querySelector("[data-ai-dictionary-log-path]"),
+        errorType: document.querySelector("[data-ai-dictionary-error-type]")
+      };
+    }
+
+    function showAiDictionaryProgress(kind, message, progress) {
+      const elements = aiDictionaryElements();
+      if (!elements.box || !elements.text) {
+        return;
+      }
+      elements.box.hidden = false;
+      elements.box.classList.remove("card-message--info", "card-message--success", "card-message--error", "is-running");
+      elements.box.classList.add(kind === "success" ? "card-message--success" : kind === "error" ? "card-message--error" : "card-message--info");
+      if (kind === "info") {
+        elements.box.classList.add("is-running");
+      }
+      elements.text.textContent = message;
+      updateAiDictionaryProgressDetails(progress);
+    }
+
+    function updateAiDictionaryProgressDetails(progress) {
+      const elements = aiDictionaryElements();
+      if (!elements.details || !progress) {
+        return;
+      }
+      const result = progress.result || {};
+      const error = progress.error || {};
+      elements.details.hidden = false;
+      if (elements.taskId) elements.taskId.textContent = progress.task_id || "";
+      if (elements.status) elements.status.textContent = progress.status || "";
+      if (elements.candidateCount) elements.candidateCount.textContent = String(result.candidate_count ?? "");
+      if (elements.chunkCount) elements.chunkCount.textContent = String(result.chunk_count ?? "");
+      if (elements.draftCount) elements.draftCount.textContent = String(result.draft_count ?? "");
+      if (elements.failedCount) elements.failedCount.textContent = String(result.failed_count ?? "");
+      if (elements.timeoutCount) elements.timeoutCount.textContent = String(result.timeout_count ?? "");
+      if (elements.rawPath) elements.rawPath.textContent = result.raw_path || "";
+      if (elements.draftPath) elements.draftPath.textContent = result.draft_path || "";
+      if (elements.logPath) elements.logPath.textContent = result.log_path || "";
+      if (elements.errorType) elements.errorType.textContent = error.error_type || "";
+    }
+
+    function stopAiDictionaryPolling() {
+      if (aiDictionaryPollState.timer !== null) {
+        clearTimeout(aiDictionaryPollState.timer);
+        aiDictionaryPollState.timer = null;
+      }
+    }
+
+    function disableAiDictionaryForm(form) {
+      form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((button) => {
+        if (button.disabled) {
+          return;
+        }
+        button.dataset.aiDictionaryDisabledByScript = "1";
+        button.disabled = true;
+      });
+    }
+
+    function restoreAiDictionaryForm(form) {
+      form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((button) => {
+        if (button.dataset.aiDictionaryDisabledByScript !== "1") {
+          return;
+        }
+        button.disabled = false;
+        delete button.dataset.aiDictionaryDisabledByScript;
+      });
+    }
+
+    async function pollAiDictionaryProgress(form, taskId) {
+      const template = form.dataset.aiDictionaryProgressUrlTemplate || "";
+      const url = template.replace("__TASK_ID__", encodeURIComponent(taskId));
+      if (!url) {
+        showAiDictionaryProgress("error", "進捗情報を確認できませんでした。", { task_id: taskId, status: "invalid_task_id" });
+        return;
+      }
+      if (Date.now() - aiDictionaryPollState.startedAt > aiDictionaryMaxPollingMs) {
+        showAiDictionaryProgress("error", "進捗確認を停止しました。画面を再読み込みしてください。", { task_id: taskId, status: "polling_timeout" });
+        return;
+      }
+      try {
+        const response = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          showAiDictionaryProgress("error", data.message || "進捗情報を確認できませんでした。", data.progress || { task_id: taskId, status: data.status || "" });
+          return;
+        }
+        aiDictionaryPollState.failures = 0;
+        const progress = data.progress || {};
+        if (progress.status === "completed") {
+          showAiDictionaryProgress("success", progress.message || "AI辞書候補を作成しました。", progress);
+          window.setTimeout(() => {
+            const completeUrl = new URL(form.dataset.aiDictionaryCompleteUrl || "{{ url_for('work_detail', work_id=confirm.work_id, _anchor='dictionary-card') }}", window.location.href);
+            completeUrl.searchParams.set("ai_dictionary_task", taskId);
+            window.location.href = completeUrl.toString();
+          }, 600);
+          return;
+        }
+        if (progress.status === "failed" || progress.status === "abandoned") {
+          showAiDictionaryProgress("error", progress.message || "AI辞書候補を作成できませんでした。", progress);
+          restoreAiDictionaryForm(form);
+          return;
+        }
+        showAiDictionaryProgress("info", progress.message || "AI辞書候補を作成しています。", progress);
+      } catch (error) {
+        aiDictionaryPollState.failures += 1;
+        if (aiDictionaryPollState.failures >= aiDictionaryMaxFailures) {
+          showAiDictionaryProgress("error", "進捗確認に失敗しました。通信状態を確認して再読み込みしてください。", { task_id: taskId, status: "polling_failed" });
+          restoreAiDictionaryForm(form);
+          return;
+        }
+      }
+      aiDictionaryPollState.timer = window.setTimeout(() => pollAiDictionaryProgress(form, taskId), aiDictionaryPollIntervalMs);
+    }
+
+    async function startAiDictionaryPolling(form) {
+      stopAiDictionaryPolling();
+      aiDictionaryPollState.startedAt = Date.now();
+      aiDictionaryPollState.failures = 0;
+      disableAiDictionaryForm(form);
+      showAiDictionaryProgress("info", "AI辞書候補を作成しています。", null);
+      try {
+        const response = await fetch(form.dataset.aiDictionaryStartUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" },
+          body: new FormData(form)
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok || !data.task_id) {
+          showAiDictionaryProgress("error", data.message || "AI辞書候補を作成できませんでした。", data.progress || null);
+          restoreAiDictionaryForm(form);
+          return;
+        }
+        showAiDictionaryProgress("info", data.message || "AI辞書候補を作成しています。", data.progress || null);
+        await pollAiDictionaryProgress(form, data.task_id);
+      } catch (error) {
+        showAiDictionaryProgress("error", "AI辞書候補を作成できませんでした。", null);
+        restoreAiDictionaryForm(form);
+      }
+    }
+
+    window.addEventListener("beforeunload", stopAiDictionaryPolling);
+
+    document.querySelectorAll("[data-ai-dictionary-form]").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        if (!form.dataset.aiDictionaryStartUrl) {
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        startAiDictionaryPolling(form);
+      });
+    });
+  </script>
 {% endblock %}

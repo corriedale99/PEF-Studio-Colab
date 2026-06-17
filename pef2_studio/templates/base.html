@@ -26,6 +26,7 @@
         form.dataset.busySubmitted = "1";
         const submitter = event.submitter;
         if (submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) {
+          submitter.classList.add("busy-submitter");
           submitter.dataset.originalLabel = submitter.value || submitter.textContent || "";
           if (submitter instanceof HTMLButtonElement) {
             submitter.textContent = "処理中です";
