@@ -635,7 +635,7 @@
       failures: 0
     };
     const ttsPollIntervalMs = 3000;
-    const ttsMaxPollingMs = 30 * 60 * 1000;
+    const ttsMaxPollingMs = 5 * 60 * 60 * 1000;
     const ttsMaxFailures = 5;
 
     function ttsProgressElements() {
@@ -750,7 +750,7 @@
         return;
       }
       if (Date.now() - ttsPollState.startedAt > ttsMaxPollingMs) {
-        showTtsProgress("error", "進捗確認を停止しました。画面を再読み込みしてください。", { task_id: taskId, status: "polling_timeout" });
+        showTtsProgress("error", "進捗確認を停止しました。生成は続いている可能性があります。画面を再読み込みして状態を確認してください。", { task_id: taskId, status: "polling_timeout" });
         return;
       }
       try {
