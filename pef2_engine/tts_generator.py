@@ -27,6 +27,7 @@ AUDIO_BACKUP_KEEP = 2
 SYNC_DURATION_TOLERANCE_SECONDS = 0.25
 FFMPEG_BIN_ENV = "FFMPEG_BIN"
 FFMPEG_BIN_DEFAULT = "ffmpeg"
+PEF_TEMP_DIR_ENV = "PEF_TEMP_DIR"
 AUDIO_FILENAME = "audio.mp3"
 SYNC_MAP_FILENAME = "sync_map.json"
 TTS_BUILD_REPORT_FILENAME = "tts_build_report.json"
@@ -99,8 +100,12 @@ def generate_tts_for_work(
     report["preserved_previous_outputs"] = previous_audio_exists or previous_sync_exists
 
     audio_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = audio_dir / f"_build_tmp_{timestamp}"
-    failed_dir = audio_dir / f"_build_failed_{timestamp}"
+    temp_root = _temp_root()
+    build_parent = temp_root / work_dir.name if temp_root is not None else audio_dir
+    tmp_dir = build_parent / f"_build_tmp_{timestamp}"
+    failed_dir = build_parent / f"_build_failed_{timestamp}"
+    commit_dir = audio_dir / f"_commit_tmp_{timestamp}"
+    expose_failed_path = temp_root is None
 
     try:
         precheck = run_tts_pre_transform(work_dir, workspace_root)
@@ -124,7 +129,14 @@ def generate_tts_for_work(
         _record_effective_tts_settings(report)
         unit_records = _render_units(tts_units, tmp_dir, resolved_backend, report)
         if report["errors"]:
-            return _fail_report(audio_dir, report, tmp_dir, failed_dir)
+            return _fail_report(
+                audio_dir,
+                report,
+                tmp_dir,
+                failed_dir,
+                commit_dir=commit_dir,
+                expose_failed_path=expose_failed_path,
+            )
 
         concat_wav = tmp_dir / CONCAT_WAV_FILENAME
         final_mp3 = tmp_dir / AUDIO_FILENAME
@@ -132,14 +144,28 @@ def generate_tts_for_work(
         if not report["errors"]:
             _encode_mp3(concat_wav, final_mp3, report)
         if report["errors"]:
-            return _fail_report(audio_dir, report, tmp_dir, failed_dir)
+            return _fail_report(
+                audio_dir,
+                report,
+                tmp_dir,
+                failed_dir,
+                commit_dir=commit_dir,
+                expose_failed_path=expose_failed_path,
+            )
 
         sync_map = _build_sync_map(unit_records, final_mp3)
         _validate_sync_map(sync_map, unit_records, final_mp3, report)
         if report["errors"]:
-            return _fail_report(audio_dir, report, tmp_dir, failed_dir)
+            return _fail_report(
+                audio_dir,
+                report,
+                tmp_dir,
+                failed_dir,
+                commit_dir=commit_dir,
+                expose_failed_path=expose_failed_path,
+            )
 
-        _commit_outputs(work_dir, tmp_dir, sync_map, report, timestamp, now)
+        _commit_outputs(work_dir, tmp_dir, commit_dir, sync_map, report, timestamp, now)
         shutil.rmtree(tmp_dir)
         report["ok"] = True
         report["committed"] = True
@@ -155,8 +181,15 @@ def generate_tts_for_work(
     except Exception as error:
         report["errors"].append(_error("tts_generation_exception", f"{type(error).__name__}: {error}"))
         if tmp_dir.exists():
-            return _fail_report(audio_dir, report, tmp_dir, failed_dir)
-        return _fail_report(audio_dir, report, None)
+            return _fail_report(
+                audio_dir,
+                report,
+                tmp_dir,
+                failed_dir,
+                commit_dir=commit_dir,
+                expose_failed_path=expose_failed_path,
+            )
+        return _fail_report(audio_dir, report, None, commit_dir=commit_dir)
 
 
 def create_backend(
@@ -603,27 +636,77 @@ def _validate_sync_map(sync_map: dict, unit_records: list[dict], final_mp3: Path
         )
 
 
-def _commit_outputs(work_dir: Path, tmp_dir: Path, sync_map: dict, report: dict, timestamp: str, now: datetime | None) -> None:
+def _commit_outputs(
+    work_dir: Path,
+    tmp_dir: Path,
+    commit_dir: Path,
+    sync_map: dict,
+    report: dict,
+    timestamp: str,
+    now: datetime | None,
+) -> None:
     audio_dir = work_dir / "audio"
-    _backup_existing_outputs(audio_dir, timestamp)
     write_json(tmp_dir / SYNC_MAP_FILENAME, sync_map)
-    shutil.move(str(tmp_dir / AUDIO_FILENAME), audio_dir / AUDIO_FILENAME)
-    shutil.move(str(tmp_dir / SYNC_MAP_FILENAME), audio_dir / SYNC_MAP_FILENAME)
+    commit_dir.mkdir(parents=True, exist_ok=False)
+    for filename in (AUDIO_FILENAME, SYNC_MAP_FILENAME):
+        shutil.copy2(tmp_dir / filename, commit_dir / filename)
+        committed_path = commit_dir / filename
+        if not committed_path.is_file() or committed_path.stat().st_size <= 0:
+            raise RuntimeError(f"commit file is missing or empty: {filename}")
+    backups = _backup_existing_outputs(audio_dir, timestamp)
+    meta_path = work_dir / workspace_paths.WORK_META_FILENAME
+    previous_meta = meta_path.read_bytes() if meta_path.is_file() else None
+    replaced: list[str] = []
+    try:
+        for filename in (AUDIO_FILENAME, SYNC_MAP_FILENAME):
+            (commit_dir / filename).replace(audio_dir / filename)
+            replaced.append(filename)
+        shutil.rmtree(commit_dir)
+        _update_meta_after_audio_success(work_dir, now)
+    except Exception:
+        for filename in replaced:
+            output_path = audio_dir / filename
+            backup_path = backups.get(filename)
+            if backup_path is not None and backup_path.is_file():
+                shutil.copy2(backup_path, output_path)
+            elif output_path.exists():
+                output_path.unlink()
+        if previous_meta is not None:
+            meta_path.write_bytes(previous_meta)
+        _remove_created_backups(backups)
+        raise
     _prune_backups(audio_dir / "backups")
-    _update_meta_after_audio_success(work_dir, now)
     report["audio_file"] = AUDIO_FILENAME
     report["sync_map_file"] = SYNC_MAP_FILENAME
 
 
-def _backup_existing_outputs(audio_dir: Path, timestamp: str) -> None:
+def _backup_existing_outputs(audio_dir: Path, timestamp: str) -> dict[str, Path]:
     backups_dir = audio_dir / "backups"
-    for filename in (AUDIO_FILENAME, SYNC_MAP_FILENAME):
-        source = audio_dir / filename
-        if not source.exists():
-            continue
-        backups_dir.mkdir(parents=True, exist_ok=True)
-        backup_name = f"{timestamp}_{filename}"
-        shutil.copy2(source, backups_dir / backup_name)
+    backups: dict[str, Path] = {}
+    try:
+        for filename in (AUDIO_FILENAME, SYNC_MAP_FILENAME):
+            source = audio_dir / filename
+            if not source.exists():
+                continue
+            backups_dir.mkdir(parents=True, exist_ok=True)
+            backup_name = f"{timestamp}_{filename}"
+            backup_path = backups_dir / backup_name
+            shutil.copy2(source, backup_path)
+            backups[filename] = backup_path
+    except Exception:
+        _remove_created_backups(backups)
+        raise
+    return backups
+
+
+def _remove_created_backups(backups: dict[str, Path]) -> None:
+    backups_dir: Path | None = None
+    for backup_path in backups.values():
+        backups_dir = backup_path.parent
+        if backup_path.exists():
+            backup_path.unlink()
+    if backups_dir is not None and backups_dir.is_dir() and not any(backups_dir.iterdir()):
+        backups_dir.rmdir()
 
 
 def _prune_backups(backups_dir: Path) -> None:
@@ -650,13 +733,23 @@ def _update_meta_after_audio_success(work_dir: Path, now: datetime | None) -> No
     write_json(meta_path, meta)
 
 
-def _fail_report(audio_dir: Path, report: dict, tmp_dir: Path | None, failed_dir: Path | None = None) -> dict:
+def _fail_report(
+    audio_dir: Path,
+    report: dict,
+    tmp_dir: Path | None,
+    failed_dir: Path | None = None,
+    *,
+    commit_dir: Path | None = None,
+    expose_failed_path: bool = True,
+) -> dict:
+    if commit_dir is not None and commit_dir.exists():
+        shutil.rmtree(commit_dir)
     if tmp_dir is not None and tmp_dir.exists():
         failed_dir = failed_dir or audio_dir / tmp_dir.name.replace("_build_tmp_", "_build_failed_", 1)
         if failed_dir.exists():
             shutil.rmtree(failed_dir)
         shutil.move(str(tmp_dir), failed_dir)
-        report["failed_build_dir"] = str(failed_dir)
+        report["failed_build_dir"] = str(failed_dir) if expose_failed_path else failed_dir.name
     report["ok"] = False
     report["committed"] = False
     report["new_outputs_committed"] = False
@@ -706,6 +799,11 @@ def _ffmpeg_bin() -> str:
     if resolved:
         return resolved
     raise RuntimeError("ffmpeg is not available")
+
+
+def _temp_root() -> Path | None:
+    value = os.environ.get(PEF_TEMP_DIR_ENV, "").strip()
+    return Path(value) if value else None
 
 
 def _new_report(work_dir: Path, backend_name: str) -> dict:
