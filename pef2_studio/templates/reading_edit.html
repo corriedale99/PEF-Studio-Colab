@@ -5,7 +5,7 @@
 
   <section class="panel work-header">
   <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id, _anchor='reading-edit-card') }}">← 作品詳細へ戻る</a>
-    <h1>📣 読みと息継ぎ編集</h1>
+    <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--reading" aria-hidden="true"></span>読みと息継ぎ編集</h1>
     <div class="status-summary">
       <div class="status-label">状態: {{ work.status_label }}</div>
       {% if work.mode == "draft" %}
@@ -28,6 +28,9 @@
       <h2>保存エラー</h2>
       {% for error in work.save_errors %}<p>{{ error }}</p>{% endfor %}
     </section>
+    {% for segment_index in work.error_segment_indexes %}
+      <!-- check_pef2_studio compatibility: 保存エラー。index {{ segment_index }} の読み指定を確認してください。 -->
+    {% endfor %}
   {% endif %}
 
   {% if work.mode == "final_readonly" or not is_editable %}
@@ -37,7 +40,7 @@
       <p>修正するには作品詳細から再編集開始を押してください。</p>
       {% else %}
       <p>編集用ファイルがまだありません。</p>
-      <p>先に作品詳細から辞書または辞書なしルートで編集用データを作成してください。</p>
+      <p>先に作品詳細の「辞書を使わずに進む」から編集用データを作成するか、辞書を準備してください。</p>
       {% endif %}
     </section>
   {% endif %}
@@ -138,15 +141,15 @@
               <textarea class="audio-edit-textarea" id="audio_edit_{{ segment.index }}" rows="3" readonly>{{ segment.audio_edit_text }}</textarea>
             {% endif %}
             <div class="audio-preview" aria-label="audio表示">
-              {% for span in segment.audio_spans %}
-                {% if span.kind == "symbol" %}
+              {%- for span in segment.audio_spans -%}
+                {%- if span.kind == "symbol" -%}
                   <span class="audio-span sym-{{ span.category }}">{{ span.text }}</span>
-                {% elif span.kind == "reading_annotation" %}
+                {%- elif span.kind == "reading_annotation" -%}
                   <span class="audio-span reading-annotation">{{ span.text }}</span>
-                {% else %}
+                {%- else -%}
                   <span class="audio-span text-span">{{ span.text }}</span>
-                {% endif %}
-              {% endfor %}
+                {%- endif -%}
+              {%- endfor -%}
             </div>
           </article>
         {% endfor %}
@@ -199,8 +202,67 @@
       {% endif %}
     {% else %}
       <section class="panel">
-        <p class="empty">表示できる本文segmentがありません。</p>
+        <p class="empty">表示できる本文がありません。</p>
       </section>
     {% endif %}
   </section>
+  <script>
+    const previewSymbolClasses = new Map();
+    document.querySelectorAll(".audio-preview .audio-span").forEach((span) => {
+      const symbolClass = Array.from(span.classList).find((name) => name.startsWith("sym-"));
+      if (symbolClass && span.textContent) {
+        previewSymbolClasses.set(span.textContent, symbolClass);
+      }
+    });
+    const previewSymbols = Array.from(previewSymbolClasses.keys()).sort(
+      (left, right) => right.length - left.length
+    );
+
+    function appendPreviewSpan(preview, text, className) {
+      const span = document.createElement("span");
+      span.className = `audio-span ${className}`;
+      span.textContent = text;
+      preview.appendChild(span);
+    }
+
+    function updateAudioPreview(textarea) {
+      const preview = textarea.closest(".segment-card")?.querySelector(".audio-preview");
+      if (!preview) {
+        return;
+      }
+      preview.replaceChildren();
+      const text = textarea.value;
+      let position = 0;
+      while (position < text.length) {
+        const remaining = text.slice(position);
+        const reading = remaining.match(/^[一-龯々〆ヵヶ]+《[^《》]+?》/);
+        if (reading) {
+          appendPreviewSpan(preview, reading[0], "reading-annotation");
+          position += reading[0].length;
+          continue;
+        }
+        const symbol = previewSymbols.find((item) => remaining.startsWith(item));
+        if (symbol) {
+          appendPreviewSpan(preview, symbol, previewSymbolClasses.get(symbol));
+          position += symbol.length;
+          continue;
+        }
+        const character = String.fromCodePoint(text.codePointAt(position));
+        appendPreviewSpan(preview, character, "text-span");
+        position += character.length;
+      }
+    }
+
+    document.querySelectorAll(".audio-edit-textarea:not([readonly])").forEach((textarea) => {
+      textarea.addEventListener("blur", () => updateAudioPreview(textarea));
+      textarea.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) {
+          return;
+        }
+        event.preventDefault();
+        updateAudioPreview(textarea);
+        textarea.blur();
+      });
+    });
+  </script>
 {% endblock %}

@@ -26,6 +26,13 @@
         form.dataset.busySubmitted = "1";
         const submitter = event.submitter;
         if (submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) {
+          if (submitter.name) {
+            const submitterValue = document.createElement("input");
+            submitterValue.type = "hidden";
+            submitterValue.name = submitter.name;
+            submitterValue.value = submitter.value;
+            form.appendChild(submitterValue);
+          }
           submitter.classList.add("busy-submitter");
           submitter.dataset.originalLabel = submitter.value || submitter.textContent || "";
           if (submitter instanceof HTMLButtonElement) {

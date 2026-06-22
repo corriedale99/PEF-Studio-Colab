@@ -4,7 +4,7 @@ from __future__ import annotations
 SYMBOL_CATEGORY_UI = {
     "drop": {
         "label": "読まない記号",
-        "description": "TTSでは読み上げない予定の記号です。",
+        "description": "読み上げ音声では読まない記号です。",
         "css_class": "sym-drop",
         "color_var": "--sym-drop-color",
         "background_var": "--sym-drop-bg",

@@ -40,7 +40,7 @@
               <td>{{ work.updated_at_label }}</td>
               <td>
                 <span class="status">{{ work.status_label }}</span>
-                {% if not work.has_meta %}<span class="meta-warning">metaなし</span>{% endif %}
+                {% if not work.has_meta %}<span class="meta-warning">作品情報なし</span>{% endif %}
               </td>
               <td>
                 <a class="button" href="{{ url_for('work_detail', work_id=work.work_id) }}">開く</a>

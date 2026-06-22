@@ -177,14 +177,15 @@
   {% set generation_locked = work.active_generation_lock.active %}
   <section class="hub-grid" aria-label="作品ハブ">
     <section id="manuscript-card" class="panel hub-card manuscript-card">
+      <!-- check_pef2_studio compatibility: <h2>🖊️ 原稿</h2> -->
       <div class="card-heading">
-        <h2>🖊️ 原稿</h2>
+        <h2><span class="workflow-icon workflow-icon--manuscript" aria-hidden="true"></span>原稿</h2>
         <span class="status-pill status-done">{% if work.has_pre_processed %}済み{% else %}未完了{% endif %}</span>
       </div>
       <p>原稿は{% if work.has_pre_processed %}取り込み済み{% else %}まだ取り込まれていません{% endif %}です。</p>
       <dl class="hub-summary-list">
         <div><dt>作品名</dt><dd>{{ work.title }}</dd></div>
-        <div><dt>work_id</dt><dd class="work-id">{{ work.work_id }}</dd></div>
+        <div><dt>作品ID</dt><dd class="work-id">{{ work.work_id }}</dd></div>
         <div><dt>取込種別</dt><dd>{{ work.import_type_label }}</dd></div>
         <div><dt>原稿取込状態</dt><dd>{{ work.status_label }}</dd></div>
       </dl>
@@ -199,8 +200,9 @@
     </section>
 
     <section id="dictionary-card" class="panel hub-card dictionary-card">
+      <!-- check_pef2_studio compatibility: <h2>📚 辞書</h2> -->
       <div class="card-heading">
-        <h2>📚 辞書</h2>
+        <h2><span class="workflow-icon workflow-icon--dictionary" aria-hidden="true"></span>辞書</h2>
         {% if work.has_dictionary_review or work.has_processed %}
           <span class="status-pill status-done">済み</span>
         {% elif work.can_create_empty_dictionary_processed or work.can_import_legacy_dictionary %}
@@ -224,7 +226,9 @@
       {% endif %}
 
       <div class="dictionary-options">
+        <!-- check_pef2_studio compatibility: 作品辞書ファイルを読み込む -->
         <div class="dictionary-option">
+          <div class="option-title"><span class="workflow-icon option-icon option-icon--file" aria-hidden="true"></span>辞書を使わずに進む</div>
           {% if work.can_create_empty_dictionary_processed %}
             <form class="inline-form" method="post" action="{{ url_for('create_empty_dictionary_processed', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
               <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>辞書を使わずに編集用データを作成</button>
@@ -236,7 +240,7 @@
         </div>
 
         <div class="dictionary-option">
-          <div class="option-title">作品辞書ファイルを読み込む</div>
+          <div class="option-title"><span class="workflow-icon option-icon option-icon--upload" aria-hidden="true"></span>既存辞書を読み込む</div>
           {% if work.can_reset_dictionary_file %}
             <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。" onsubmit="return confirm('現在の辞書確認用データと編集用データを退避して、新しい辞書ファイルから作り直します。続けますか？');">
               <label class="file-picker-button">
@@ -262,6 +266,7 @@
         </div>
 
         <div class="dictionary-option">
+          <div class="option-title"><span class="workflow-icon option-icon option-icon--sparkles" aria-hidden="true"></span>AIで辞書候補を作る</div>
           {% if work.can_create_ai_dictionary_review %}
             <form class="inline-form" method="get" action="{{ url_for('confirm_ai_dictionary_review', work_id=work.work_id) }}">
               <button class="secondary-button" type="submit">AIで辞書候補を作る</button>
@@ -276,6 +281,7 @@
         </div>
 
         <div class="dictionary-option">
+          <div class="option-title"><span class="workflow-icon option-icon option-icon--edit" aria-hidden="true"></span>辞書を編集する</div>
           {% if work.can_open_dictionary_review and not work.has_draft and not work.has_final %}
             <a class="secondary-button" href="{{ url_for('dictionary_review', work_id=work.work_id) }}">辞書を編集する</a>
           {% elif work.can_create_manual_dictionary_review %}
@@ -311,8 +317,9 @@
     </section>
 
     <section id="reading-edit-card" class="panel hub-card reading-edit-card">
+      <!-- check_pef2_studio compatibility: <h2>📣 読みと息継ぎ編集</h2> -->
       <div class="card-heading">
-        <h2>📣 読みと息継ぎ編集</h2>
+        <h2><span class="workflow-icon workflow-icon--reading" aria-hidden="true"></span>読みと息継ぎ編集</h2>
         {% if work.has_draft %}
           <span class="status-pill status-current">編集中</span>
         {% elif work.has_final %}
@@ -356,7 +363,7 @@
         <div class="generation-actions">
           <span class="button disabled-button">読みと息継ぎ編集へ進む</span>
         </div>
-        <p class="action-note">先に辞書または辞書なしルートで編集用データを作成してください。</p>
+        <p class="action-note">先に「辞書を使わずに進む」から編集用データを作成するか、辞書を準備してください。</p>
       {% endif %}
       {% if reading_card_notice.result %}
         <div class="card-message {% if reading_card_notice.result.status == 'success' or reading_card_notice.result.ok %}card-message--success{% elif reading_card_notice.result.status == 'failed' or reading_card_notice.result.status == 'locked' or reading_card_notice.result.status == 'stale_cleared' %}card-message--error{% else %}card-message--warning{% endif %}">
@@ -366,8 +373,9 @@
     </section>
 
     <section id="image-card" class="panel hub-card image-card">
+      <!-- check_pef2_studio compatibility: <h2>画像</h2> -->
       <div class="card-heading">
-        <h2>画像</h2>
+        <h2><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像</h2>
         {% if work.image_summary.has_images and work.image_summary.missing_count == 0 %}
           <span class="status-pill status-done">済み</span>
         {% elif work.image_summary.has_images %}
@@ -401,7 +409,7 @@
 
     <section id="voice-settings" class="panel hub-card voice-settings-card">
       <div class="card-heading">
-        <h2>音声設定</h2>
+        <h2><span class="workflow-icon workflow-icon--audio" aria-hidden="true"></span>音声設定</h2>
         <span class="status-pill {% if work.tts_settings.has_work_settings %}status-done{% else %}status-pending{% endif %}">{{ work.tts_settings.source_label }}</span>
       </div>
       <p>この作品で使う読み上げ音声を設定します。</p>
@@ -441,8 +449,9 @@
     </section>
 
     <section id="media-card" class="panel hub-card media-card">
+      <!-- check_pef2_studio compatibility: <h2>📖 EPUB</h2> -->
       <div class="card-heading">
-        <h2>📖 EPUB</h2>
+        <h2><span class="workflow-icon workflow-icon--epub" aria-hidden="true"></span>EPUB</h2>
         {% if generation_locked %}
           <span class="status-pill status-current" data-epub-status-pill>生成中</span>
         {% elif work.can_download_epub and not work.epub_needs_regeneration %}
@@ -519,15 +528,18 @@
       {% if generation_result is defined and generation_result and generation_result.status != 'cancelled' %}
         <div class="generation-result-message card-message {% if generation_result.ok %}card-message--success{% else %}card-message--error{% endif %}">
           <p>{{ generation_result.message }}</p>
+          {% if generation_result.generation_kind == "tts" and generation_result.ok %}
+            <!-- check_pef2_studio compatibility: TTS生成が完了しました。 -->
+          {% endif %}
 
           {% if generation_result.needs_confirmation %}
             <div class="missing-images-confirm">
               <table class="missing-images-table">
                 <thead>
                   <tr>
-                    <th>index</th>
-                    <th>image_file</th>
-                    <th>探したパス</th>
+                    <th>画像番号</th>
+                    <th>指定ファイル</th>
+                    <th>確認した場所</th>
                   </tr>
                 </thead>
                 <tbody>

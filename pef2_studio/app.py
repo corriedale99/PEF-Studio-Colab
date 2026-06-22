@@ -1094,7 +1094,7 @@ def _lock_generation_result(work_id: str, result: dict) -> dict:
 
 def _format_save_error_message(segment_index: str) -> str:
     if segment_index:
-        return f"保存エラー。index {segment_index} の読み指定を確認してください。"
+        return f"保存エラー。本文番号 {segment_index} の読み指定を確認してください。"
     return "保存エラー。読み指定を確認してください。"
 
 

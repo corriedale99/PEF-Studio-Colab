@@ -69,7 +69,7 @@ DICTIONARY_REVIEW_DECISION_LABELS = {
     "ignore": "採用しない",
 }
 GENERATION_LABELS = {
-    "tts": "TTS生成",
+    "tts": "音声生成",
     "epub": "EPUB生成",
 }
 MODE_LABELS = {

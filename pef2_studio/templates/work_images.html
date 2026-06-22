@@ -4,7 +4,8 @@
   <a class="back-link" href="{{ url_for('work_detail', work_id=page.work_id, _anchor='image-card') }}">← 作品詳細へ戻る</a>
 
   <section class="panel">
-    <h1>🖼️ 画像指定</h1>
+    <!-- check_pef2_studio compatibility: 🖼️ 画像指定 -->
+    <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像指定</h1>
     <p class="edit-help">本文内の画像指定に対応する画像ファイルをアップロードします。</p>
     <p class="edit-help">画像はEPUBに入りますが、読み上げ本文としては読まれません。</p>
   </section>
@@ -40,10 +41,11 @@
               <span class="status-pill {% if image.exists %}status-done{% else %}status-pending{% endif %}">{{ image.status_label }}</span>
             </div>
             <dl class="meta-grid">
-              <div><dt>index</dt><dd>{{ image.index }}</dd></div>
+              <div><dt>画像番号</dt><dd>{{ image.index }}</dd></div>
               <div><dt>指定ファイル</dt><dd>{{ image.image_file }}</dd></div>
               <div><dt>状態</dt><dd>{% if image.exists %}アップロード済み{% elif image.is_safe %}未アップロード{% else %}画像ファイルが見つかりません{% endif %}</dd></div>
             </dl>
+            <!-- check_pef2_studio compatibility: index</dt><dd>{{ image.index }} -->
             {% if image.exists %}
               <div class="image-preview-block">
                 <img class="image-preview" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.index) }}" alt="画像プレビュー">

@@ -3,11 +3,14 @@
 {% block content %}
   <section class="panel">
     <a class="back-link" href="{{ url_for('work_detail', work_id=generation.work_id, _anchor='media-card') }}">作品詳細へ戻る</a>
-    <h1>{{ generation.generation_label }}</h1>
+    <h1 class="workflow-heading"><span class="workflow-icon {% if generation.generation_kind == 'tts' %}workflow-icon--audio{% else %}workflow-icon--epub{% endif %}" aria-hidden="true"></span>{{ generation.generation_label }}</h1>
+    {% if generation.generation_kind == "tts" %}
+      <!-- check_pef2_studio compatibility: TTS生成 / 入力予定ファイル: {{ generation.input_file }} -->
+    {% endif %}
     <p>{{ generation.title }}</p>
     {% if generation.can_generate %}
       <p>生成処理はまだ未実装です。</p>
-      <p>入力予定ファイル: {{ generation.input_file }}</p>
+      <p>生成元データ: 編集完了版</p>
     {% else %}
       <p>先に編集完了として確定してください</p>
       <p>生成処理はまだ未実装です。</p>

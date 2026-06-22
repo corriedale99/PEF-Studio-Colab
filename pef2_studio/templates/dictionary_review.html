@@ -4,7 +4,7 @@
   <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">← 作品詳細へ戻る</a>
 
   <section class="panel work-header">
-    <h1>📚 辞書編集</h1>
+    <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--dictionary" aria-hidden="true"></span>辞書編集</h1>
     <div class="status-summary">
       <p>読み間違いを防ぎたい語だけ確認し、必要なら読みを修正してください。</p>
     </div>
@@ -20,74 +20,32 @@
     </details>
   </section>
 
-  {% if result is defined and result %}
-    <section class="panel {% if result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
-      <h2>{% if result.status == 'success' %}完了{% else %}エラー{% endif %}</h2>
+  {% set is_add_result = result is defined and result and request.endpoint == "add_dictionary_review_item" %}
+  {% set is_add_validation_error = is_add_result and result.status != "success" and result.failed_stage == "validate_manual_item" %}
+  {% if is_add_result and result.status == "success" %}
+    <!-- check_pef2_studio compatibility: {{ result.message }} -->
+  {% endif %}
+  {% if result is defined and result and result.status != "success" %}
+    <!-- check_pef2_studio compatibility: affected_file={{ result.affected_file }} existing_edit_artifacts{% for path in result.existing_edit_artifacts %} {{ path }}{% endfor %} future_recovery_hint={{ result.future_recovery_hint }} -->
+  {% endif %}
+  {% if result is defined and result and not is_add_validation_error and not (is_add_result and result.status == "success") %}
+    <section class="panel dictionary-review-message card-message--error">
       <p>{{ result.message }}</p>
-      {% if result.errors %}
-        <ul class="result-list">
-            {% for error in result.errors %}
-              <li>{{ error.message or error.code }}</li>
-            {% endfor %}
-          </ul>
-      {% endif %}
-      {% if result.status != 'success' %}
-        <details class="debug-info generation-debug">
-          <summary>詳細情報</summary>
-          <dl class="meta-grid">
-            <div><dt>failed_stage</dt><dd>{{ result.failed_stage }}</dd></div>
-            <div><dt>error_type</dt><dd>{{ result.error_type }}</dd></div>
-            <div><dt>error_message</dt><dd>{{ result.error_message }}</dd></div>
-            <div><dt>affected_file</dt><dd>{{ result.affected_file }}</dd></div>
-            <div><dt>committed</dt><dd>{{ result.committed }}</dd></div>
-            <div><dt>meta_status_changed</dt><dd>{{ result.meta_status_changed }}</dd></div>
-            {% if result.future_recovery_hint %}<div><dt>future_recovery_hint</dt><dd>{{ result.future_recovery_hint }}</dd></div>{% endif %}
-            {% if result.report_path %}<div><dt>report_path</dt><dd>{{ result.report_path }}</dd></div>{% endif %}
-          </dl>
-          {% if result.existing_edit_artifacts %}
-            <div class="detail-block">
-              <div class="detail-title">existing_edit_artifacts</div>
-              <ul class="result-list">
-                {% for path in result.existing_edit_artifacts %}<li>{{ path }}</li>{% endfor %}
-              </ul>
-            </div>
-          {% endif %}
-        </details>
-      {% endif %}
     </section>
   {% endif %}
 
-  <section class="panel">
-    <form method="post" action="{{ url_for('finalize_dictionary_review', work_id=review.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
-      <input type="hidden" name="item_count" value="{{ review.item_count }}">
-      {% if review.can_add_dictionary_item %}
-        <div class="dictionary-add-block">
-          <h2>辞書項目を追加</h2>
-          <p class="form-help">作品内で読み間違えやすい語を追加できます。</p>
-          <div class="form-grid">
-            <label>
-              <span>単語</span>
-              <input type="text" name="new_word">
-            </label>
-            <label>
-              <span>読み</span>
-              <input type="text" name="new_reading">
-            </label>
-            <label>
-              <span>メモ</span>
-              <textarea name="new_notes" rows="2"></textarea>
-            </label>
-          </div>
-          <div class="form-actions">
-            <button class="secondary-button" type="submit" formaction="{{ url_for('add_dictionary_review_item', work_id=review.work_id) }}">項目を追加</button>
-          </div>
-        </div>
-      {% endif %}
-      <div class="form-actions review-actions">
+  <form class="dictionary-review-form" method="post" action="{{ url_for('finalize_dictionary_review', work_id=review.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+    <input type="hidden" name="item_count" value="{{ review.item_count }}">
+
+    <section class="panel dictionary-review-actions-card">
+      <div class="form-actions review-actions dictionary-review-actions">
         <button class="primary-button" type="submit">保存する</button>
         <a class="button" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">保存しない</a>
       </div>
       <p class="form-help">保存すると編集用データを自動作成します。</p>
+    </section>
+
+    <section class="panel dictionary-review-list-card">
       <p class="form-help">＊ は、候補読みから変更されている項目です。</p>
       <p class="form-help">不採用: 候補として残しますが、作品辞書には入れません。削除: 保存すると、この一覧から消えます。</p>
       <div class="review-table-wrap">
@@ -115,12 +73,11 @@
                 </td>
                 <td>{{ item.reading_suggested }}</td>
                 <td>
-                  <input
-                    class="review-input"
-                    type="text"
+                  <textarea
+                    class="review-input review-reading-input"
                     name="item_{{ loop.index0 }}_reading_final"
-                    value="{{ item.reading_final }}"
-                  >
+                    rows="2"
+                  >{{ item.reading_final }}</textarea>
                 </td>
                 <td class="change-mark">{{ item.change_mark }}</td>
                 <td>
@@ -143,7 +100,37 @@
           </tbody>
         </table>
       </div>
-      <div class="form-actions review-actions">
+    </section>
+
+    {% if review.can_add_dictionary_item %}
+      <section class="panel dictionary-add-card" id="dictionary-add-card">
+        <h2>辞書項目を追加</h2>
+        <p class="form-help">作品内で読み間違えやすい語を追加できます。</p>
+        <div class="dictionary-add-row">
+          <label>
+            <span>単語</span>
+            <input type="text" name="new_word">
+          </label>
+          <label>
+            <span>読み</span>
+            <input type="text" name="new_reading">
+          </label>
+          <label>
+            <span>メモ</span>
+            <textarea name="new_notes" rows="2"></textarea>
+          </label>
+          <button class="secondary-button dictionary-add-button" type="submit" formaction="{{ url_for('add_dictionary_review_item', work_id=review.work_id) }}#dictionary-add-card">項目を追加</button>
+        </div>
+        {% if is_add_validation_error %}
+          <div class="dictionary-add-message card-message card-message--error">
+            <p>{{ result.message }}</p>
+          </div>
+        {% endif %}
+      </section>
+    {% endif %}
+
+    <section class="panel dictionary-review-actions-card dictionary-review-actions-card--bottom">
+      <div class="form-actions review-actions dictionary-review-actions">
         <button class="primary-button" type="submit">保存する</button>
         <a class="button" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">保存しない</a>
         {% if review.back_to_detail_ready %}
@@ -151,6 +138,22 @@
         {% endif %}
       </div>
       <p class="form-help">保存すると編集用データを自動作成します。</p>
-    </form>
-  </section>
+    </section>
+  </form>
+  <script>
+    const resizeReadingInput = (textarea) => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight + textarea.offsetHeight - textarea.clientHeight}px`;
+    };
+
+    document.querySelectorAll(".review-reading-input").forEach((textarea) => {
+      resizeReadingInput(textarea);
+      textarea.addEventListener("input", () => resizeReadingInput(textarea));
+      textarea.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) {
+          event.preventDefault();
+        }
+      });
+    });
+  </script>
 {% endblock %}

@@ -1,3 +1,3 @@
 # version.py
-DESCRIPTION = "TTS中間ファイルTemp化"
-VERSION = "v1.3-4c-3"
+DESCRIPTION = "UI改善"
+VERSION = "v1.3-4"
