@@ -72,6 +72,8 @@ from pef2_engine.generation_lock import (
 )
 from pef2_studio.generation import (
     build_generation_notice_result,
+    cancel_ai_dictionary_review_task,
+    cancel_tts_generation_task,
     load_ai_dictionary_review_progress,
     load_latest_blocked_generation_result,
     load_tts_generation_progress,
@@ -556,6 +558,33 @@ def create_app(workspace_root: Path | None = None):
             200,
         )
 
+    @app.post("/works/<work_id>/ai-dictionary-review/cancel/<task_id>")
+    def cancel_ai_dictionary_review(work_id: str, task_id: str):
+        if not is_valid_task_id(task_id, operation="ai_dictionary"):
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "invalid_task_id",
+                    "message": "進捗情報を確認できませんでした。",
+                },
+                400,
+            )
+        result = cancel_ai_dictionary_review_task(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if result is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "message": "進捗情報が見つかりません。画面を再読み込みしてください。",
+                },
+                404,
+            )
+        return _json_response(result, 202 if result.get("ok") else 409)
+
     @app.post("/works/<work_id>/import-legacy-dictionary")
     def import_legacy_dictionary(work_id: str):
         lock_result = _guard_generation_lock_for_post(work_id)
@@ -705,6 +734,33 @@ def create_app(workspace_root: Path | None = None):
             },
             200,
         )
+
+    @app.post("/works/<work_id>/tts/cancel/<task_id>")
+    def cancel_tts_generation(work_id: str, task_id: str):
+        if not is_valid_task_id(task_id, operation="tts"):
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "invalid_task_id",
+                    "message": "進捗情報を確認できませんでした。",
+                },
+                400,
+            )
+        result = cancel_tts_generation_task(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if result is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "message": "進捗情報が見つかりません。画面を再読み込みしてください。",
+                },
+                404,
+            )
+        return _json_response(result, 202 if result.get("ok") else 409)
 
     @app.post("/works/<work_id>/epub")
     def generate_epub(work_id: str):
@@ -856,12 +912,12 @@ def create_app(workspace_root: Path | None = None):
         )
         if detail is None:
             abort(404)
-        if generation_result is None:
+        if generation_result is None and not detail["active_generation_lock"]["active"]:
             generation_result = load_latest_blocked_generation_result(
                 resolved_workspace_root,
                 work_id,
             )
-        if dictionary_import_result is None:
+        if dictionary_import_result is None and not detail["active_generation_lock"]["active"]:
             dictionary_import_result = _ai_dictionary_completion_notice(work_id)
         return (
             render_template(

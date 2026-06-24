@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 from pef2_engine import workspace_paths
 from pef2_engine.epub_builder import EPUB_BUILD_REPORT_FILENAME, generate_epub_for_work
+from pef2_engine.gemini_dictionary_review import AIDictionaryReviewCancelled
 from pef2_engine.generation_lock import acquire_generation_lock, release_generation_lock
 from pef2_engine.io_utils import read_json, write_json
 from pef2_engine.tts_generator import (
@@ -15,6 +16,7 @@ from pef2_engine.tts_generator import (
     VOICE_PREVIEW_DIRNAME,
     VOICE_PREVIEW_FILENAME,
     WORKSPACE_TEMP_DIRNAME,
+    TTSGenerationCancelled,
     generate_voice_preview_for_work,
     generate_workspace_voice_preview,
     generate_tts_for_work,
@@ -50,8 +52,17 @@ EPUB_FAILED_MESSAGE = "EPUBの生成に失敗しました。既存のEPUBがあ�
 MISSING_IMAGES_CANCELLED_MESSAGE = "画像ファイルが足りないため、EPUB生成を中止しました。画像を追加してから、もう一度EPUB生成を実行してください。"
 MISSING_IMAGES_ALLOWED_MESSAGE = "EPUBを生成しました。ただし、一部の画像が見つからなかったため、本文に代替表示を入れています。"
 MISSING_IMAGES_MESSAGE = "画像ファイルが足りませんが、そのままEPUBを生成しますか？"
-AI_DICTIONARY_RUNNING_MESSAGE = "AI辞書候補を作成しています。"
-AI_DICTIONARY_FAILED_MESSAGE = "AI辞書候補を作成できませんでした。時間をおいてもう一度試すか、手動で辞書項目を追加してください。"
+AI_DICTIONARY_RUNNING_MESSAGE = "辞書候補を生成中"
+AI_DICTIONARY_FAILED_MESSAGE = "辞書候補生成に失敗しました。時間をおいてもう一度試すか、手動で辞書項目を追加してください。"
+TTS_CANCELLED_MESSAGE = "音声生成をキャンセルしました。"
+TTS_CANCEL_UNAVAILABLE_MESSAGE = "音声生成はすでに完了しているため、キャンセルできません。"
+AI_DICTIONARY_CANCELLED_MESSAGE = "辞書候補生成をキャンセルしました。"
+AI_DICTIONARY_CANCEL_UNAVAILABLE_MESSAGE = "辞書候補生成はすでに完了しているため、キャンセルできません。"
+
+_TTS_TASKS: dict[str, dict[str, Any]] = {}
+_TTS_TASKS_LOCK = Lock()
+_AI_DICTIONARY_TASKS: dict[str, dict[str, Any]] = {}
+_AI_DICTIONARY_TASKS_LOCK = Lock()
 
 
 def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
@@ -99,29 +110,32 @@ def start_tts_generation_task(
             _preflight_result("tts", work_dir, FINAL_REQUIRED_MESSAGE, ["04_processed_final.json がありません。"])
         )
 
-    lock_result = acquire_generation_lock(work_dir, "tts")
+    task_id = create_task_id("tts")
+    lock_result = acquire_generation_lock(work_dir, "tts", task_id=task_id)
     if not lock_result.get("ok"):
         return _task_start_failed(_lock_result("tts", work_dir, lock_result))
 
     lock_data = lock_result.get("lock")
-    task_id = create_task_id("tts")
+    cancel_event = Event()
+    _register_tts_task(task_id, work_dir.name, cancel_event)
     progress = new_progress(
         work_dir,
         task_id=task_id,
         operation="tts",
         status="running",
-        phase="生成中" if next_action == "epub" else "音声生成中",
-        message="生成しています。" if next_action == "epub" else "音声を生成しています。",
+        phase="音声生成中",
+        message="音声生成中",
         lock_started_at=str(lock_data.get("started_at") or "") if isinstance(lock_data, dict) else "",
         next_action=next_action,
         next_action_status="pending" if next_action else "",
     )
+    progress["cancellable"] = True
     write_progress(work_dir, progress)
 
     thread = Thread(
         target=_run_tts_generation_task,
         name=f"pef2-tts-{task_id}",
-        args=(Path(workspace_root), work_dir, task_id, lock_data, next_action),
+        args=(Path(workspace_root), work_dir, task_id, lock_data, next_action, cancel_event),
         daemon=True,
     )
     try:
@@ -136,6 +150,7 @@ def start_tts_generation_task(
             error={"message": f"{type(error).__name__}: {error}"},
         )
         release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _unregister_tts_task(task_id)
         return {
             "ok": False,
             "status": "failed",
@@ -147,7 +162,7 @@ def start_tts_generation_task(
     return {
         "ok": True,
         "status": "started",
-        "message": "生成しています。" if next_action == "epub" else "音声生成を開始しました。",
+        "message": "音声生成中",
         "task_id": task_id,
         "progress": progress,
     }
@@ -160,6 +175,53 @@ def load_tts_generation_progress(workspace_root: Path, work_id: str, task_id: st
     if work_dir is None:
         return None
     return read_progress(work_dir, task_id)
+
+
+def cancel_tts_generation_task(workspace_root: Path, work_id: str, task_id: str) -> dict | None:
+    if not is_valid_task_id(task_id, operation="tts"):
+        return None
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    progress = read_progress(work_dir, task_id)
+    if progress is None:
+        return None
+
+    with _TTS_TASKS_LOCK:
+        task = _TTS_TASKS.get(task_id)
+        if task is None or task.get("work_id") != work_dir.name:
+            return _cancel_unavailable_result(task_id, progress)
+        state = str(task.get("state") or "")
+        if state == "cancelling":
+            return {
+                "ok": True,
+                "status": "cancelling",
+                "message": "キャンセル中",
+                "task_id": task_id,
+                "progress": progress,
+            }
+        if state != "running":
+            return _cancel_unavailable_result(task_id, progress)
+        task["state"] = "cancelling"
+        progress = update_progress(
+            work_dir,
+            task_id,
+            status="cancelling",
+            phase="キャンセル中",
+            message="キャンセル中",
+            cancellable=False,
+            cancel_requested=True,
+        ) or progress
+        cancel_event = task.get("event")
+        if isinstance(cancel_event, Event):
+            cancel_event.set()
+    return {
+        "ok": True,
+        "status": "cancelling",
+        "message": "キャンセル中",
+        "task_id": task_id,
+        "progress": progress,
+    }
 
 
 def start_ai_dictionary_review_task(workspace_root: Path, work_id: str) -> dict | None:
@@ -181,27 +243,30 @@ def start_ai_dictionary_review_task(workspace_root: Path, work_id: str) -> dict 
             )
         )
 
-    lock_result = acquire_generation_lock(work_dir, "ai_dictionary")
+    task_id = create_task_id("ai_dictionary")
+    lock_result = acquire_generation_lock(work_dir, "ai_dictionary", task_id=task_id)
     if not lock_result.get("ok"):
         return _task_start_failed(_lock_result("ai_dictionary", work_dir, lock_result))
 
     lock_data = lock_result.get("lock")
-    task_id = create_task_id("ai_dictionary")
+    cancel_event = Event()
+    _register_ai_dictionary_task(task_id, work_dir.name, cancel_event)
     progress = new_progress(
         work_dir,
         task_id=task_id,
         operation="ai_dictionary",
         status="running",
-        phase="AI辞書候補を作成中",
+        phase="辞書候補生成中",
         message=AI_DICTIONARY_RUNNING_MESSAGE,
         lock_started_at=str(lock_data.get("started_at") or "") if isinstance(lock_data, dict) else "",
     )
+    progress["cancellable"] = True
     write_progress(work_dir, progress)
 
     thread = Thread(
         target=_run_ai_dictionary_review_task,
         name=f"pef2-ai-dictionary-{task_id}",
-        args=(Path(workspace_root), work_dir, task_id, lock_data),
+        args=(Path(workspace_root), work_dir, task_id, lock_data, cancel_event),
         daemon=True,
     )
     try:
@@ -216,6 +281,7 @@ def start_ai_dictionary_review_task(workspace_root: Path, work_id: str) -> dict 
             error={"message": f"{type(error).__name__}: {error}"},
         )
         release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _unregister_ai_dictionary_task(task_id)
         return {
             "ok": False,
             "status": "failed",
@@ -242,6 +308,53 @@ def load_ai_dictionary_review_progress(workspace_root: Path, work_id: str, task_
     return read_progress(work_dir, task_id)
 
 
+def cancel_ai_dictionary_review_task(workspace_root: Path, work_id: str, task_id: str) -> dict | None:
+    if not is_valid_task_id(task_id, operation="ai_dictionary"):
+        return None
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    progress = read_progress(work_dir, task_id)
+    if progress is None:
+        return None
+
+    with _AI_DICTIONARY_TASKS_LOCK:
+        task = _AI_DICTIONARY_TASKS.get(task_id)
+        if task is None or task.get("work_id") != work_dir.name:
+            return _ai_dictionary_cancel_unavailable_result(task_id, progress)
+        state = str(task.get("state") or "")
+        if state == "cancelling":
+            return {
+                "ok": True,
+                "status": "cancelling",
+                "message": "キャンセル中",
+                "task_id": task_id,
+                "progress": progress,
+            }
+        if state != "running":
+            return _ai_dictionary_cancel_unavailable_result(task_id, progress)
+        task["state"] = "cancelling"
+        progress = update_progress(
+            work_dir,
+            task_id,
+            status="cancelling",
+            phase="キャンセル中",
+            message="キャンセル中",
+            cancellable=False,
+            cancel_requested=True,
+        ) or progress
+        cancel_event = task.get("event")
+        if isinstance(cancel_event, Event):
+            cancel_event.set()
+    return {
+        "ok": True,
+        "status": "cancelling",
+        "message": "キャンセル中",
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
 def load_latest_blocked_generation_result(workspace_root: Path, work_id: str) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
@@ -249,12 +362,18 @@ def load_latest_blocked_generation_result(workspace_root: Path, work_id: str) ->
     progress_dir = work_dir / PROGRESS_DIRNAME
     if not progress_dir.is_dir():
         return None
+    latest_epub_mtime = _latest_official_epub_mtime(work_dir)
     candidates = sorted(
         progress_dir.glob("tts_*.json"),
         key=lambda path: path.stat().st_mtime if path.exists() else 0,
         reverse=True,
     )
     for path in candidates:
+        try:
+            if latest_epub_mtime is not None and path.stat().st_mtime <= latest_epub_mtime:
+                continue
+        except OSError:
+            continue
         progress = read_progress(work_dir, path.stem)
         if not _is_blocked_epub_progress(progress):
             continue
@@ -270,6 +389,7 @@ def _run_tts_generation_task(
     task_id: str,
     lock_data: object,
     next_action: str,
+    cancel_event: Event,
 ) -> None:
     lock_released = False
     try:
@@ -278,12 +398,30 @@ def _run_tts_generation_task(
                 work_dir,
                 workspace_root,
                 speaker_id=_studio_speaker_id(workspace_root, work_dir),
+                cancel_event=cancel_event,
+                before_commit=lambda: _begin_tts_commit(work_dir, task_id),
             )
             result = _tts_generation_result(workspace_root, work_dir, report)
+        except TTSGenerationCancelled:
+            _set_tts_task_state(task_id, "cancelled")
+            update_progress(
+                work_dir,
+                task_id,
+                status="cancelled",
+                phase="音声生成キャンセル",
+                message=TTS_CANCELLED_MESSAGE,
+                result=None,
+                error=None,
+                cancellable=False,
+                cancel_requested=True,
+                next_action_status="",
+            )
+            return
         except Exception as error:
             result = _exception_result("tts", work_dir, error)
 
         status = "completed" if result.get("ok") else "failed"
+        _set_tts_task_state(task_id, status)
         update_progress(
             work_dir,
             task_id,
@@ -293,6 +431,7 @@ def _run_tts_generation_task(
             result=_progress_result(result),
             error=None if status == "completed" else _progress_error(result),
             next_action_status="pending" if status == "completed" and next_action else "",
+            cancellable=False,
         )
         if status != "completed" or next_action != "epub":
             return
@@ -328,6 +467,70 @@ def _run_tts_generation_task(
     finally:
         if not lock_released:
             release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _unregister_tts_task(task_id)
+
+
+def _register_tts_task(task_id: str, work_id: str, cancel_event: Event) -> None:
+    with _TTS_TASKS_LOCK:
+        _TTS_TASKS[task_id] = {
+            "work_id": work_id,
+            "event": cancel_event,
+            "state": "running",
+        }
+
+
+def _unregister_tts_task(task_id: str) -> None:
+    with _TTS_TASKS_LOCK:
+        _TTS_TASKS.pop(task_id, None)
+
+
+def _set_tts_task_state(task_id: str, state: str) -> None:
+    with _TTS_TASKS_LOCK:
+        task = _TTS_TASKS.get(task_id)
+        if task is not None:
+            task["state"] = state
+
+
+def _begin_tts_commit(work_dir: Path, task_id: str) -> bool:
+    with _TTS_TASKS_LOCK:
+        task = _TTS_TASKS.get(task_id)
+        if task is None or task.get("state") != "running":
+            return False
+        cancel_event = task.get("event")
+        if isinstance(cancel_event, Event) and cancel_event.is_set():
+            task["state"] = "cancelling"
+            return False
+        task["state"] = "committing"
+    update_progress(
+        work_dir,
+        task_id,
+        status="committing",
+        phase="音声保存中",
+        message="音声を保存しています。",
+        cancellable=False,
+        cancel_requested=False,
+    )
+    return True
+
+
+def _cancel_unavailable_result(task_id: str, progress: dict) -> dict:
+    return {
+        "ok": False,
+        "status": "not_cancellable",
+        "message": TTS_CANCEL_UNAVAILABLE_MESSAGE,
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
+def _ai_dictionary_cancel_unavailable_result(task_id: str, progress: dict) -> dict:
+    return {
+        "ok": False,
+        "status": "not_cancellable",
+        "message": AI_DICTIONARY_CANCEL_UNAVAILABLE_MESSAGE,
+        "task_id": task_id,
+        "progress": progress,
+    }
 
 
 def _run_ai_dictionary_review_task(
@@ -335,10 +538,16 @@ def _run_ai_dictionary_review_task(
     work_dir: Path,
     task_id: str,
     lock_data: object,
+    cancel_event: Event,
 ) -> None:
     try:
         try:
-            result = create_ai_dictionary_review_submission(workspace_root, work_dir.name)
+            result = create_ai_dictionary_review_submission(
+                workspace_root,
+                work_dir.name,
+                cancel_event=cancel_event,
+                before_commit=lambda: _begin_ai_dictionary_commit(work_dir, task_id),
+            )
             if result is None:
                 result = _preflight_result(
                     "ai_dictionary",
@@ -346,21 +555,81 @@ def _run_ai_dictionary_review_task(
                     "作品が見つかりません。",
                     ["work directory was not found."],
                 )
+        except AIDictionaryReviewCancelled:
+            _set_ai_dictionary_task_state(task_id, "cancelled")
+            update_progress(
+                work_dir,
+                task_id,
+                status="cancelled",
+                phase="辞書候補生成キャンセル",
+                message=AI_DICTIONARY_CANCELLED_MESSAGE,
+                result=None,
+                error=None,
+                cancellable=False,
+                cancel_requested=True,
+            )
+            return
         except Exception as error:
             result = _exception_result("ai_dictionary", work_dir, error)
 
         status = "completed" if result.get("status") == "success" or result.get("ok") else "failed"
+        _set_ai_dictionary_task_state(task_id, status)
         update_progress(
             work_dir,
             task_id,
             status=status,
-            phase="AI辞書候補作成完了" if status == "completed" else "AI辞書候補作成失敗",
+            phase="辞書候補生成完了" if status == "completed" else "辞書候補生成失敗",
             message=str(result.get("message") or (AI_DICTIONARY_RUNNING_MESSAGE if status == "completed" else AI_DICTIONARY_FAILED_MESSAGE)),
             result=_ai_dictionary_progress_result(work_dir, result),
             error=None if status == "completed" else _ai_dictionary_progress_error(result),
+            cancellable=False,
         )
     finally:
         release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _unregister_ai_dictionary_task(task_id)
+
+
+def _register_ai_dictionary_task(task_id: str, work_id: str, cancel_event: Event) -> None:
+    with _AI_DICTIONARY_TASKS_LOCK:
+        _AI_DICTIONARY_TASKS[task_id] = {
+            "work_id": work_id,
+            "event": cancel_event,
+            "state": "running",
+        }
+
+
+def _unregister_ai_dictionary_task(task_id: str) -> None:
+    with _AI_DICTIONARY_TASKS_LOCK:
+        _AI_DICTIONARY_TASKS.pop(task_id, None)
+
+
+def _set_ai_dictionary_task_state(task_id: str, state: str) -> None:
+    with _AI_DICTIONARY_TASKS_LOCK:
+        task = _AI_DICTIONARY_TASKS.get(task_id)
+        if task is not None:
+            task["state"] = state
+
+
+def _begin_ai_dictionary_commit(work_dir: Path, task_id: str) -> bool:
+    with _AI_DICTIONARY_TASKS_LOCK:
+        task = _AI_DICTIONARY_TASKS.get(task_id)
+        if task is None or task.get("state") != "running":
+            return False
+        cancel_event = task.get("event")
+        if isinstance(cancel_event, Event) and cancel_event.is_set():
+            task["state"] = "cancelling"
+            return False
+        task["state"] = "committing"
+    update_progress(
+        work_dir,
+        task_id,
+        status="running",
+        phase="辞書候補保存中",
+        message="辞書候補を保存しています。",
+        cancellable=False,
+        cancel_requested=False,
+    )
+    return True
 
 
 def _tts_generation_result(workspace_root: Path, work_dir: Path, report: dict) -> dict:
@@ -1091,6 +1360,20 @@ def _has_official_epub(work_dir: Path) -> bool:
     if not epub_dir.is_dir():
         return False
     return any(path.is_file() and path.suffix == ".epub" for path in epub_dir.glob("*.epub"))
+
+
+def _latest_official_epub_mtime(work_dir: Path) -> float | None:
+    epub_dir = work_dir / "epub"
+    if not epub_dir.is_dir():
+        return None
+    mtimes: list[float] = []
+    for path in epub_dir.glob("*.epub"):
+        try:
+            if path.is_file():
+                mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(mtimes) if mtimes else None
 
 
 def _rel_work_path(work_dir: Path, *parts: str) -> str:

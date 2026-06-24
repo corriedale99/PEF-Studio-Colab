@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unicodedata
 from pathlib import Path
+from threading import Event
+from typing import Callable
 
 from pef2_engine import workspace_paths
 from pef2_engine.dictionary_candidate import (
@@ -18,6 +20,7 @@ from pef2_engine.dictionary_loader import find_dictionary_matches, load_reading_
 from pef2_engine.gemini_dictionary_review import (
     CHUNK_SIZE,
     MAX_REVIEW_TERMS,
+    AIDictionaryReviewCancelled,
     run_gemini_review,
 )
 from pef2_engine.io_utils import read_text, write_json
@@ -38,6 +41,8 @@ def run_step5_dictionary_draft(
     run_gemini: bool = False,
     max_terms: int = MAX_REVIEW_TERMS,
     chunk_size: int = CHUNK_SIZE,
+    cancel_event: Event | None = None,
+    before_commit: Callable[[], bool] | None = None,
 ) -> dict:
     project_root = project_root or workspace_paths.PROJECT_ROOT
     work_dir = Path(work_dir)
@@ -54,9 +59,11 @@ def run_step5_dictionary_draft(
     if not source_path.exists():
         raise FileNotFoundError(source_path)
 
+    _raise_if_cancelled(cancel_event)
     source_text = read_text(source_path)
     dictionary_entries = _load_workspace_dictionaries(work_dir, workspace_root)
     records, warnings = _build_candidate_records(source_text, dictionary_entries)
+    _raise_if_cancelled(cancel_event)
     suspicious_terms = aggregate_suspicious_terms(records)
     ai_review_terms = build_ai_review_terms(
         suspicious_terms,
@@ -64,6 +71,7 @@ def run_step5_dictionary_draft(
         max_terms=max_terms,
     )
     prompt_preview = build_gemini_prompt_preview(ai_review_terms)
+    _raise_if_cancelled(cancel_event)
     if warnings:
         ai_review_terms["warnings"] = sorted(set(warnings))
         prompt_preview["warnings"] = sorted(set(warnings))
@@ -80,8 +88,11 @@ def run_step5_dictionary_draft(
         run_gemini=run_gemini,
         max_terms=max_terms,
         chunk_size=chunk_size,
+        cancel_event=cancel_event,
+        before_commit=before_commit,
     )
 
+    _raise_if_cancelled(cancel_event)
     if (work_dir / workspace_paths.WORK_META_FILENAME).exists():
         workspace_paths.update_work_meta_status(work_dir, "dictionary_draft")
 
@@ -156,3 +167,8 @@ def _resolve_optional_child(parent: Path, filename: str) -> Path:
         if unicodedata.normalize("NFC", child.name) == target_name:
             return child
     return path
+
+
+def _raise_if_cancelled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise AIDictionaryReviewCancelled()

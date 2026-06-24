@@ -12,7 +12,7 @@ import urllib.request
 import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from pef2_engine import workspace_paths
 from pef2_engine.io_utils import read_json, write_json
@@ -76,6 +76,15 @@ class TTSBackend(Protocol):
         ...
 
 
+class CancelEvent(Protocol):
+    def is_set(self) -> bool:
+        ...
+
+
+class TTSGenerationCancelled(Exception):
+    pass
+
+
 def generate_tts_for_work(
     work_dir: Path,
     workspace_root: Path | None = None,
@@ -83,6 +92,8 @@ def generate_tts_for_work(
     backend_name: str | None = None,
     backend: TTSBackend | None = None,
     speaker_id: int | str | None = None,
+    cancel_event: CancelEvent | None = None,
+    before_commit: Callable[[], bool] | None = None,
     now: datetime | None = None,
 ) -> dict:
     work_dir = Path(work_dir)
@@ -108,7 +119,9 @@ def generate_tts_for_work(
     expose_failed_path = temp_root is None
 
     try:
+        _check_cancel(cancel_event)
         precheck = run_tts_pre_transform(work_dir, workspace_root)
+        _check_cancel(cancel_event)
         report["warnings"].extend(precheck.get("warnings", []))
         if precheck.get("errors"):
             report["errors"].extend(precheck.get("errors", []))
@@ -127,7 +140,13 @@ def generate_tts_for_work(
         )
         _record_backend_settings(report, resolved_backend)
         _record_effective_tts_settings(report)
-        unit_records = _render_units(tts_units, tmp_dir, resolved_backend, report)
+        unit_records = _render_units(
+            tts_units,
+            tmp_dir,
+            resolved_backend,
+            report,
+            cancel_event=cancel_event,
+        )
         if report["errors"]:
             return _fail_report(
                 audio_dir,
@@ -140,8 +159,10 @@ def generate_tts_for_work(
 
         concat_wav = tmp_dir / CONCAT_WAV_FILENAME
         final_mp3 = tmp_dir / AUDIO_FILENAME
+        _check_cancel(cancel_event)
         _concat_unit_wavs(unit_records, concat_wav, report)
         if not report["errors"]:
+            _check_cancel(cancel_event)
             _encode_mp3(concat_wav, final_mp3, report)
         if report["errors"]:
             return _fail_report(
@@ -153,7 +174,9 @@ def generate_tts_for_work(
                 expose_failed_path=expose_failed_path,
             )
 
+        _check_cancel(cancel_event)
         sync_map = _build_sync_map(unit_records, final_mp3)
+        _check_cancel(cancel_event)
         _validate_sync_map(sync_map, unit_records, final_mp3, report)
         if report["errors"]:
             return _fail_report(
@@ -165,6 +188,9 @@ def generate_tts_for_work(
                 expose_failed_path=expose_failed_path,
             )
 
+        _check_cancel(cancel_event)
+        if before_commit is not None and not before_commit():
+            raise TTSGenerationCancelled()
         _commit_outputs(work_dir, tmp_dir, commit_dir, sync_map, report, timestamp, now)
         shutil.rmtree(tmp_dir)
         report["ok"] = True
@@ -178,6 +204,9 @@ def generate_tts_for_work(
         report["preserved_previous_outputs"] = False
         write_json(audio_dir / TTS_BUILD_REPORT_FILENAME, report)
         return report
+    except TTSGenerationCancelled:
+        _cleanup_cancelled_build(tmp_dir, commit_dir)
+        raise
     except Exception as error:
         report["errors"].append(_error("tts_generation_exception", f"{type(error).__name__}: {error}"))
         if tmp_dir.exists():
@@ -445,13 +474,23 @@ class GcsBackend:
         output_path.write_bytes(audio_content)
 
 
-def _render_units(tts_units: list[dict], tmp_dir: Path, backend: TTSBackend, report: dict) -> list[dict]:
+def _render_units(
+    tts_units: list[dict],
+    tmp_dir: Path,
+    backend: TTSBackend,
+    report: dict,
+    *,
+    cancel_event: CancelEvent | None = None,
+) -> list[dict]:
     records: list[dict] = []
     for order, unit in enumerate(tts_units):
+        _check_cancel(cancel_event)
         output_path = tmp_dir / f"unit_{order:05d}_{unit.get('unit_id', 'unknown')}.wav"
         try:
             if unit.get("type") == "speak":
+                _check_cancel(cancel_event)
                 backend.synthesize_to_wav(str(unit.get("text") or ""), output_path)
+                _check_cancel(cancel_event)
             elif unit.get("type") == "pause":
                 pause_type = str(unit.get("pause_type") or "")
                 seconds = SILENCE.get(pause_type)
@@ -460,10 +499,13 @@ def _render_units(tts_units: list[dict], tmp_dir: Path, backend: TTSBackend, rep
                 generate_silence_wav(output_path, seconds)
             else:
                 raise RuntimeError(f"unknown tts unit type: {unit.get('type')}")
+            _check_cancel(cancel_event)
             duration = wav_duration_seconds(output_path)
             if duration <= 0:
                 raise RuntimeError("unit wav duration is zero")
             records.append({"unit": unit, "path": output_path, "duration": duration, "order": order})
+        except TTSGenerationCancelled:
+            raise
         except Exception as error:
             report["errors"].append(
                 _error(
@@ -756,6 +798,18 @@ def _fail_report(
     report["duration_seconds"] = 0.0
     write_json(audio_dir / TTS_BUILD_REPORT_FILENAME, report)
     return report
+
+
+def _check_cancel(cancel_event: CancelEvent | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise TTSGenerationCancelled()
+
+
+def _cleanup_cancelled_build(tmp_dir: Path, commit_dir: Path) -> None:
+    if commit_dir.exists():
+        shutil.rmtree(commit_dir)
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
 
 
 def _record_backend_settings(report: dict, backend: TTSBackend) -> None:

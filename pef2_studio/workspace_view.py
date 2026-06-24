@@ -8,7 +8,8 @@ import shutil
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping
+from threading import Event
+from typing import Any, Callable, Mapping
 
 from pef2_engine import workspace_paths
 from pef2_engine.dictionary_finalize import run_finalize_dictionary
@@ -34,7 +35,7 @@ from pef2_engine.processed_editing import (
     build_audio_edit_spans,
     edit_text_to_audio,
 )
-from pef2_engine.gemini_dictionary_review import MAX_REVIEW_TERMS
+from pef2_engine.gemini_dictionary_review import AIDictionaryReviewCancelled, MAX_REVIEW_TERMS
 from pef2_engine.generation_lock import active_generation_lock_message, generation_lock_path, read_generation_lock
 from pef2_engine.step5_dictionary_draft import (
     GEMINI_REVIEW_RAW_FILENAME,
@@ -998,6 +999,9 @@ def create_manual_dictionary_review_submission(
 def create_ai_dictionary_review_submission(
     workspace_root: Path,
     work_id: str,
+    *,
+    cancel_event: Event | None = None,
+    before_commit: Callable[[], bool] | None = None,
 ) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
@@ -1036,6 +1040,8 @@ def create_ai_dictionary_review_submission(
             work_dir=work_dir,
             project_root=workspace_paths.PROJECT_ROOT,
             run_gemini=True,
+            cancel_event=cancel_event,
+            before_commit=before_commit,
         )
         step5_status = str(step5_result.get("status") or "")
         if step5_status in {"missing_api_key", "import_error"}:
@@ -1066,6 +1072,14 @@ def create_ai_dictionary_review_submission(
         )
         write_json(workspace_paths.dictionary_review_path(work_dir), review_data)
         workspace_paths.update_work_meta_status(work_dir, "dictionary_review_ready")
+    except AIDictionaryReviewCancelled:
+        _restore_backup_files(
+            work_dir,
+            backup,
+            GEMINI_DICTIONARY_RESET_BACKUP_FILENAMES,
+        )
+        _restore_meta_status(meta_path, original_meta, original_status)
+        raise
     except Exception as error:
         _restore_backup_files(
             work_dir,
@@ -1155,6 +1169,7 @@ def load_ai_dictionary_review_confirmation(
         "status": "ready",
         "work_id": work_dir.name,
         "title": _work_title(work_dir.name, meta),
+        "active_generation_lock": _active_generation_lock_info(work_dir),
         "has_dictionary_review": (
             work_dir / workspace_paths.DICTIONARY_REVIEW_FILENAME
         ).exists(),
@@ -2165,6 +2180,7 @@ def _active_generation_lock_info(work_dir: Path) -> dict:
             "active": False,
             "message": "",
             "operation": "",
+            "task_id": "",
             "started_at": "",
             "lock_path": "",
         }
@@ -2173,6 +2189,7 @@ def _active_generation_lock_info(work_dir: Path) -> dict:
         "message": "生成中です。完了後に再読み込みしてください。",
         "details_message": active_generation_lock_message(lock_data),
         "operation": str(lock_data.get("operation") or ""),
+        "task_id": str(lock_data.get("task_id") or ""),
         "started_at": str(lock_data.get("started_at") or ""),
         "lock_path": str(generation_lock_path(work_dir)),
     }

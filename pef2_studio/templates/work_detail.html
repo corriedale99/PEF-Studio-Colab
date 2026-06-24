@@ -26,9 +26,6 @@
     {% if not header_notice.result and dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.title and dictionary_import_result.display_scope != 'dictionary_card' %}
       {% set header_notice.result = dictionary_import_result %}
     {% endif %}
-    {% if not header_notice.result and generation_result is defined and generation_result and generation_result.status == 'cancelled' %}
-      {% set header_notice.result = generation_result %}
-    {% endif %}
     {% if header_notice.result %}
       <div class="status-message {% if header_notice.result.status == 'success' or header_notice.result.ok %}status-message--success{% elif header_notice.result.status == 'failed' or header_notice.result.status == 'locked' or header_notice.result.status == 'stale_cleared' %}status-message--error{% elif header_notice.result.status == 'cancelled' %}status-message--info{% else %}status-message--warning{% endif %}">
         {% if header_notice.result.message %}<p>{{ header_notice.result.message }}</p>{% endif %}
@@ -231,7 +228,7 @@
           <div class="option-title"><span class="workflow-icon option-icon option-icon--file" aria-hidden="true"></span>辞書を使わずに進む</div>
           {% if work.can_create_empty_dictionary_processed %}
             <form class="inline-form" method="post" action="{{ url_for('create_empty_dictionary_processed', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
-              <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>辞書を使わずに編集用データを作成</button>
+              <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>辞書を使わずに編集用データを作成</button>
             </form>
           {% else %}
             <span class="button disabled-button">辞書を使わずに編集用データを作成</span>
@@ -245,14 +242,14 @@
             <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。" onsubmit="return confirm('現在の辞書確認用データと編集用データを退避して、新しい辞書ファイルから作り直します。続けますか？');">
               <label class="file-picker-button">
                 <span>ファイルを選択</span>
-                <input type="file" name="source_dictionary" accept=".json,application/json" data-auto-submit-file {% if generation_locked %}disabled{% endif %}>
+                <input type="file" name="source_dictionary" accept=".json,application/json" data-auto-submit-file {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>
               </label>
             </form>
           {% elif work.can_import_dictionary_file %}
             <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('import_legacy_dictionary', work_id=work.work_id) }}#dictionary-card" data-busy-message="処理中です。しばらくお待ちください。">
               <label class="file-picker-button">
                 <span>ファイルを選択</span>
-                <input type="file" name="source_dictionary" accept=".json,application/json" data-auto-submit-file {% if generation_locked %}disabled{% endif %}>
+                <input type="file" name="source_dictionary" accept=".json,application/json" data-auto-submit-file {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>
               </label>
             </form>
           {% else %}
@@ -286,7 +283,7 @@
             <a class="secondary-button" href="{{ url_for('dictionary_review', work_id=work.work_id) }}">辞書を編集する</a>
           {% elif work.can_create_manual_dictionary_review %}
             <form class="inline-form" method="post" action="{{ url_for('create_manual_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
-              <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>辞書を編集する</button>
+              <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>辞書を編集する</button>
             </form>
           {% else %}
             <button class="secondary-button" type="button" disabled>辞書を編集する</button>
@@ -297,7 +294,7 @@
         {% if work.can_direct_finalize_dictionary %}
           <div class="dictionary-direct-action">
             <form class="inline-form" method="post" action="{{ url_for('direct_finalize_dictionary_review', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
-              <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>この辞書で編集用データを作成</button>
+              <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>この辞書で編集用データを作成</button>
             </form>
           </div>
         {% endif %}
@@ -337,11 +334,11 @@
           <p>続けると、現在の途中保存を確定版で上書きします。</p>
           <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}#reading-edit-card" data-busy-message="処理中です。しばらくお待ちください。">
             <input type="hidden" name="confirm" value="1">
-            <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>再編集する</button>
+            <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>再編集する</button>
           </form>
         {% else %}
           <form class="inline-form" method="post" action="{{ url_for('start_reedit', work_id=work.work_id) }}#reading-edit-card" data-busy-message="処理中です。しばらくお待ちください。">
-            <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>再編集する</button>
+            <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>再編集する</button>
           </form>
         {% endif %}
       {% elif is_editable %}
@@ -423,7 +420,7 @@
               <span>声のキャラID</span>
               <input type="number" name="speaker_id" min="0" step="1" value="{{ work_speaker_id }}">
             </label>
-            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings" {% if generation_locked %}disabled{% endif %}>試聴する</button>
+            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>試聴する</button>
           </div>
         </div>
         {% if voice_preview_result is defined and voice_preview_result %}
@@ -438,7 +435,7 @@
           </div>
         {% endif %}
         <div class="form-actions">
-          <button class="secondary-button" type="submit" {% if generation_locked %}disabled{% endif %}>音声設定を保存する</button>
+          <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>音声設定を保存する</button>
         </div>
       </form>
       {% if tts_settings_result is defined and tts_settings_result %}
@@ -448,7 +445,7 @@
       {% endif %}
     </section>
 
-    <section id="media-card" class="panel hub-card media-card">
+    <section id="media-card" class="panel hub-card media-card"{% if generation_locked and work.active_generation_lock.operation == 'tts' and work.active_generation_lock.task_id %} data-active-tts-task-id="{{ work.active_generation_lock.task_id }}"{% endif %}>
       <!-- check_pef2_studio compatibility: <h2>📖 EPUB</h2> -->
       <div class="card-heading">
         <h2><span class="workflow-icon workflow-icon--epub" aria-hidden="true"></span>EPUB</h2>
@@ -477,8 +474,8 @@
             <a class="primary-button download-button" href="{{ url_for('download_epub', work_id=work.work_id) }}">ダウンロード</a>
           {% endif %}
           {% if not work.can_download_epub or work.epub_needs_regeneration %}
-            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
-              <button class="button action-button" type="submit" {% if generation_locked %}disabled{% endif %}>EPUB生成</button>
+            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-cancel-url-template="{{ url_for('cancel_tts_generation', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
+              <button class="button action-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>EPUB生成</button>
             </form>
           {% endif %}
         </div>
@@ -489,7 +486,10 @@
           <p>この画面を閉じずにお待ちください。</p>
         </div>
         <div class="card-message card-message--info" data-tts-progress-message hidden>
-          <p><span data-tts-progress-text>生成しています。</span><span class="loading-dots" aria-hidden="true"></span></p>
+          <p><span data-tts-progress-text>音声生成中</span><span class="loading-dots" aria-hidden="true"></span></p>
+          <div class="generation-actions">
+            <button class="secondary-button cancel-button" type="button" data-tts-cancel-button hidden>キャンセル</button>
+          </div>
         </div>
         <details class="debug-info generation-debug" data-tts-progress-details hidden>
           <summary>詳細情報</summary>
@@ -513,20 +513,21 @@
         </div>
       {% endif %}
       {% if generation_locked %}
-        <div class="card-message card-message--info is-running">
+        <div class="card-message card-message--info is-running" data-active-generation-lock>
           <p><span>{{ work.active_generation_lock.message }}</span><span class="loading-dots" aria-hidden="true"></span></p>
         </div>
-        <details class="debug-info generation-debug">
+        <details class="debug-info generation-debug" data-active-generation-lock>
           <summary>詳細情報</summary>
           <dl class="meta-grid">
             {% if work.active_generation_lock.operation %}<div><dt>operation</dt><dd>{{ work.active_generation_lock.operation }}</dd></div>{% endif %}
+            {% if work.active_generation_lock.task_id %}<div><dt>task_id</dt><dd>{{ work.active_generation_lock.task_id }}</dd></div>{% endif %}
             {% if work.active_generation_lock.started_at %}<div><dt>started_at</dt><dd>{{ work.active_generation_lock.started_at }}</dd></div>{% endif %}
             {% if work.active_generation_lock.lock_path %}<div><dt>lock_path</dt><dd>{{ work.active_generation_lock.lock_path }}</dd></div>{% endif %}
           </dl>
         </details>
       {% endif %}
-      {% if generation_result is defined and generation_result and generation_result.status != 'cancelled' %}
-        <div class="generation-result-message card-message {% if generation_result.ok %}card-message--success{% else %}card-message--error{% endif %}">
+      {% if generation_result is defined and generation_result %}
+        <div class="generation-result-message card-message {% if generation_result.ok %}card-message--success{% elif generation_result.status == 'cancelled' %}card-message--info{% else %}card-message--error{% endif %}">
           <p>{{ generation_result.message }}</p>
           {% if generation_result.generation_kind == "tts" and generation_result.ok %}
             <!-- check_pef2_studio compatibility: TTS生成が完了しました。 -->
@@ -553,15 +554,16 @@
                 </tbody>
               </table>
               <div class="generation-actions">
-                <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
+                <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-cancel-url-template="{{ url_for('cancel_tts_generation', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
                   <input type="hidden" name="allow_missing_images" value="1">
                   <button class="primary-button" type="submit">生成を続ける</button>
                 </form>
-                <a class="secondary-button cancel-button" href="{{ url_for('work_detail', work_id=work.work_id, view='final', generation_notice='missing_images_cancelled') }}">キャンセル</a>
+                <a class="secondary-button cancel-button" href="{{ url_for('work_detail', work_id=work.work_id, view='final', generation_notice='missing_images_cancelled', _anchor='media-card') }}">キャンセル</a>
               </div>
             </div>
           {% endif %}
         </div>
+        {% if generation_result.status != 'cancelled' %}
         <div class="generation-result">
           <details class="debug-info generation-debug">
             <summary>詳細情報</summary>
@@ -607,6 +609,7 @@
             {% endif %}
           </details>
         </div>
+        {% endif %}
       {% endif %}
     </section>
   </section>
@@ -644,7 +647,9 @@
     const ttsPollState = {
       timer: null,
       startedAt: 0,
-      failures: 0
+      failures: 0,
+      form: null,
+      taskId: ""
     };
     const ttsPollIntervalMs = 3000;
     const ttsMaxPollingMs = 5 * 60 * 60 * 1000;
@@ -659,7 +664,8 @@
         status: document.querySelector("[data-tts-status]"),
         reportPath: document.querySelector("[data-tts-report-path]"),
         failedBuildDir: document.querySelector("[data-tts-failed-build-dir]"),
-        devLog: document.querySelector("[data-tts-dev-log]")
+        devLog: document.querySelector("[data-tts-dev-log]"),
+        cancelButton: document.querySelector("[data-tts-cancel-button]")
       };
     }
 
@@ -676,6 +682,7 @@
       }
       elements.text.textContent = message;
       updateTtsProgressDetails(progress);
+      updateTtsCancelButton(progress);
     }
 
     function setEpubStatusRunning() {
@@ -717,6 +724,10 @@
     }
 
     function restoreGenerationSubmitButtons() {
+      document.querySelectorAll("[data-generation-disabled-by-lock]").forEach((control) => {
+        control.disabled = false;
+        delete control.dataset.generationDisabledByLock;
+      });
       generationSubmitButtons().forEach((button) => {
         if (button.dataset.generationDisabledByScript !== "1") {
           return;
@@ -745,6 +756,23 @@
           elements.devLog.appendChild(item);
         });
       }
+    }
+
+    function updateTtsCancelButton(progress) {
+      const elements = ttsProgressElements();
+      if (!elements.cancelButton) {
+        return;
+      }
+      const canCancel = Boolean(
+        progress &&
+        progress.status === "running" &&
+        progress.cancellable &&
+        ttsPollState.form &&
+        ttsPollState.taskId
+      );
+      elements.cancelButton.hidden = !canCancel;
+      elements.cancelButton.style.display = canCancel ? "" : "none";
+      elements.cancelButton.disabled = !canCancel;
     }
 
     function stopTtsPolling() {
@@ -791,8 +819,16 @@
           }
           return;
         }
+        if (progress.status === "cancelled") {
+          showTtsProgress("success", progress.message || "音声生成をキャンセルしました。", progress);
+          restoreEpubStatusPill();
+          restoreGenerationSubmitButtons();
+          return;
+        }
         if (progress.status === "failed" || progress.status === "abandoned") {
           showTtsProgress("error", progress.message || "音声生成に失敗しました。", progress);
+          restoreEpubStatusPill();
+          restoreGenerationSubmitButtons();
           return;
         }
         showTtsProgress("info", progress.message || "生成しています。", progress);
@@ -808,10 +844,15 @@
 
     async function startTtsPolling(form) {
       stopTtsPolling();
+      document.querySelectorAll(".generation-result-message, .generation-result").forEach((element) => {
+        element.hidden = true;
+      });
       ttsPollState.startedAt = Date.now();
       ttsPollState.failures = 0;
+      ttsPollState.form = form;
+      ttsPollState.taskId = "";
       setEpubStatusRunning();
-      showTtsProgress("info", "生成しています。", null);
+      showTtsProgress("info", "音声生成中", null);
       disableGenerationSubmitButtons();
       try {
         const formData = new FormData();
@@ -831,7 +872,8 @@
           restoreGenerationSubmitButtons();
           return;
         }
-        showTtsProgress("info", data.message || "生成しています。", data.progress || null);
+        ttsPollState.taskId = data.task_id;
+        showTtsProgress("info", data.message || "音声生成中", data.progress || null);
         await pollTtsProgress(form, data.task_id);
       } catch (error) {
         showTtsProgress("error", "音声生成に失敗しました。", null);
@@ -840,7 +882,64 @@
       }
     }
 
+    async function cancelTtsGeneration() {
+      const form = ttsPollState.form;
+      const taskId = ttsPollState.taskId;
+      if (!form || !taskId) {
+        return;
+      }
+      const template = form.dataset.ttsCancelUrlTemplate || "";
+      const url = template.replace("__TASK_ID__", encodeURIComponent(taskId));
+      if (!url) {
+        return;
+      }
+      const elements = ttsProgressElements();
+      if (elements.cancelButton) {
+        elements.cancelButton.disabled = true;
+      }
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" }
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          showTtsProgress("error", data.message || "音声生成はすでに完了しているため、キャンセルできません。", data.progress || null);
+          return;
+        }
+        showTtsProgress("info", "キャンセル中", data.progress || { task_id: taskId, status: "cancelling" });
+      } catch (error) {
+        showTtsProgress("error", "音声生成はすでに完了しているため、キャンセルできません。", { task_id: taskId, status: "not_cancellable" });
+      }
+    }
+
     window.addEventListener("beforeunload", stopTtsPolling);
+
+    const ttsCancelButton = document.querySelector("[data-tts-cancel-button]");
+    if (ttsCancelButton) {
+      ttsCancelButton.addEventListener("click", cancelTtsGeneration);
+    }
+
+    function resumeTtsPolling() {
+      const mediaCard = document.querySelector("[data-active-tts-task-id]");
+      const form = document.querySelector(".generation-submit-form[data-tts-progress-url-template]");
+      const taskId = mediaCard ? mediaCard.dataset.activeTtsTaskId || "" : "";
+      if (!form || !taskId) {
+        return;
+      }
+      document.querySelectorAll("[data-active-generation-lock]").forEach((element) => {
+        element.hidden = true;
+      });
+      ttsPollState.startedAt = Date.now();
+      ttsPollState.failures = 0;
+      ttsPollState.form = form;
+      ttsPollState.taskId = taskId;
+      setEpubStatusRunning();
+      showTtsProgress("info", "音声生成中", { task_id: taskId, status: "running" });
+      disableGenerationSubmitButtons();
+      pollTtsProgress(form, taskId);
+    }
 
     document.querySelectorAll(".generation-submit-form").forEach((form) => {
       form.addEventListener("submit", (event) => {
@@ -860,6 +959,8 @@
         disableGenerationSubmitButtons();
       });
     });
+
+    resumeTtsPolling();
 
     document.querySelectorAll("[data-auto-submit-file]").forEach((input) => {
       input.addEventListener("change", () => {

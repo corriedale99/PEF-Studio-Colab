@@ -61,6 +61,7 @@ def acquire_generation_lock(
     work_dir: Path,
     operation: str,
     *,
+    task_id: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
     work_dir = Path(work_dir)
@@ -74,6 +75,8 @@ def acquire_generation_lock(
         "pid": os.getpid(),
         "started_at": current.isoformat(timespec="seconds"),
     }
+    if task_id:
+        lock_data["task_id"] = task_id
 
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

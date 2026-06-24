@@ -7,6 +7,7 @@ import signal
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from pef2_engine.io_utils import read_json, write_json
 
@@ -35,6 +36,10 @@ class GeminiResponseParseError(Exception):
         self.text = text
 
 
+class AIDictionaryReviewCancelled(Exception):
+    pass
+
+
 def run_gemini_review(
     *,
     ai_review_terms_path: Path,
@@ -45,10 +50,14 @@ def run_gemini_review(
     run_gemini: bool = False,
     max_terms: int = MAX_REVIEW_TERMS,
     chunk_size: int = CHUNK_SIZE,
+    cancel_event: threading.Event | None = None,
+    before_commit: Callable[[], bool] | None = None,
 ) -> dict:
+    _raise_if_cancelled(cancel_event)
     ai_review_terms = read_json(ai_review_terms_path, default={})
     candidates = select_candidates(ai_review_terms, max_terms=max_terms)
     logs = [_build_log("start", candidate_count=len(candidates), model=GEMINI_MODEL)]
+    _raise_if_cancelled(cancel_event)
 
     if not run_gemini:
         logs.append(_build_log("skipped_api_disabled"))
@@ -61,6 +70,8 @@ def run_gemini_review(
             candidates,
             "api_disabled",
             chunk_size,
+            cancel_event=cancel_event,
+            before_commit=before_commit,
         )
 
     if not candidates:
@@ -74,8 +85,11 @@ def run_gemini_review(
             candidates,
             "no_candidates",
             chunk_size,
+            cancel_event=cancel_event,
+            before_commit=before_commit,
         )
 
+    _raise_if_cancelled(cancel_event)
     api_key = _load_api_key(project_root)
     api_key_available = bool(api_key)
     logs.append(_build_log("api_key_available", available=api_key_available))
@@ -90,9 +104,12 @@ def run_gemini_review(
             candidates,
             "missing_api_key",
             chunk_size,
+            cancel_event=cancel_event,
+            before_commit=before_commit,
         )
 
     logs.append(_build_log("api_import_start"))
+    _raise_if_cancelled(cancel_event)
     try:
         import google.generativeai  # noqa: F401
     except ImportError as error:
@@ -113,6 +130,8 @@ def run_gemini_review(
             candidates,
             "import_error",
             chunk_size,
+            cancel_event=cancel_event,
+            before_commit=before_commit,
         )
     logs.append(_build_log("api_import_success"))
 
@@ -125,6 +144,7 @@ def run_gemini_review(
     seen_draft_surfaces = set()
 
     for chunk_index, chunk in enumerate(chunks):
+        _raise_if_cancelled(cancel_event)
         logs.append(
             _build_log(
                 "chunk_start",
@@ -132,7 +152,14 @@ def run_gemini_review(
                 candidate_count=len(chunk),
             )
         )
-        chunk_result = _run_chunk_with_retries(chunk, chunk_index, api_key, logs)
+        chunk_result = _run_chunk_with_retries(
+            chunk,
+            chunk_index,
+            api_key,
+            logs,
+            cancel_event=cancel_event,
+        )
+        _raise_if_cancelled(cancel_event)
         chunk_summaries.append(chunk_result["summary"])
         raw_error_responses.extend(chunk_result.get("raw_error_responses", []))
         if chunk_result["raw_response"]:
@@ -172,6 +199,7 @@ def run_gemini_review(
         skipped=False,
         chunk_size=chunk_size,
     )
+    _prepare_to_write_outputs(cancel_event, before_commit)
     write_json(raw_path, raw_result)
     write_json(draft_path, draft_items)
     _write_jsonl(log_path, logs)
@@ -273,9 +301,11 @@ def call_gemini_chunk(
     attempt: int,
     api_key: str,
     logs: list[dict],
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     import google.generativeai as genai
 
+    _raise_if_cancelled(cancel_event)
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
         GEMINI_MODEL,
@@ -295,6 +325,7 @@ def call_gemini_chunk(
         request_options,
     )
     logs.append(_build_log("api_call_returned", chunk_index=chunk_index, attempt=attempt))
+    _raise_if_cancelled(cancel_event)
     text = getattr(response, "text", "") or ""
     try:
         parsed, parse_note = _parse_gemini_response_text(text)
@@ -378,6 +409,8 @@ def _run_chunk_with_retries(
     chunk_index: int,
     api_key: str,
     logs: list[dict],
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     last_error = ""
     last_error_type = ""
@@ -387,8 +420,9 @@ def _run_chunk_with_retries(
     attempts = 0
     for attempt in range(MAX_RETRIES):
         attempts = attempt + 1
-        time.sleep(THROTTLE_TIME + attempt * 2.0)
+        _wait_or_cancel(THROTTLE_TIME + attempt * 2.0, cancel_event)
         try:
+            _raise_if_cancelled(cancel_event)
             logs.append(
                 _build_log(
                     "api_call_prepare",
@@ -397,7 +431,15 @@ def _run_chunk_with_retries(
                     model=GEMINI_MODEL,
                 )
             )
-            raw_response = call_gemini_chunk(chunk, chunk_index, attempts, api_key, logs)
+            raw_response = call_gemini_chunk(
+                chunk,
+                chunk_index,
+                attempts,
+                api_key,
+                logs,
+                cancel_event=cancel_event,
+            )
+            _raise_if_cancelled(cancel_event)
             response_count = len(raw_response.get("parsed", []))
             logs.append(
                 _build_log(
@@ -419,6 +461,8 @@ def _run_chunk_with_retries(
                 "raw_response": raw_response,
                 "raw_error_responses": raw_error_responses,
             }
+        except AIDictionaryReviewCancelled:
+            raise
         except Exception as error:
             last_error = _safe_error(error, api_key)
             last_error_type = type(error).__name__
@@ -468,7 +512,7 @@ def _run_chunk_with_retries(
             )
             if retry_wait is None or attempts >= MAX_RETRIES:
                 break
-            time.sleep(retry_wait)
+            _wait_or_cancel(retry_wait, cancel_event)
 
     logs.append(
         _build_log(
@@ -543,6 +587,9 @@ def _write_skipped_outputs(
     candidates: list[dict],
     skip_reason: str,
     chunk_size: int,
+    *,
+    cancel_event: threading.Event | None = None,
+    before_commit: Callable[[], bool] | None = None,
 ) -> dict:
     logs.append(
         _build_log(
@@ -564,6 +611,7 @@ def _write_skipped_outputs(
         skip_reason=skip_reason,
         chunk_size=chunk_size,
     )
+    _prepare_to_write_outputs(cancel_event, before_commit)
     write_json(raw_path, raw_result)
     write_json(draft_path, [])
     _write_jsonl(log_path, logs)
@@ -685,3 +733,25 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     if content:
         content += "\n"
     path.write_text(content, encoding="utf-8")
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise AIDictionaryReviewCancelled()
+
+
+def _wait_or_cancel(seconds: float, cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None:
+        if cancel_event.wait(seconds):
+            raise AIDictionaryReviewCancelled()
+        return
+    time.sleep(seconds)
+
+
+def _prepare_to_write_outputs(
+    cancel_event: threading.Event | None,
+    before_commit: Callable[[], bool] | None,
+) -> None:
+    _raise_if_cancelled(cancel_event)
+    if before_commit is not None and not before_commit():
+        raise AIDictionaryReviewCancelled()
