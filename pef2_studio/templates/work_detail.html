@@ -352,7 +352,7 @@
             {% if work.has_draft %}
               <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">途中保存を開く</a>
             {% else %}
-              <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">編集する</a>
+              <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">確認・編集する</a>
             {% endif %}
           </div>
         {% endif %}
@@ -370,9 +370,9 @@
     </section>
 
     <section id="image-card" class="panel hub-card image-card">
-      <!-- check_pef2_studio compatibility: <h2>画像</h2> -->
+      <!-- check_pef2_studio compatibility: <h2>画像ファイルと画像代替え（alt）テキスト編集</h2> -->
       <div class="card-heading">
-        <h2><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像</h2>
+        <h2><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像ファイルと画像代替え（alt）テキスト編集</h2>
         {% if work.image_summary.has_images and work.image_summary.missing_count == 0 %}
           <span class="status-pill status-done">済み</span>
         {% elif work.image_summary.has_images %}
@@ -381,8 +381,8 @@
           <span class="status-pill status-pending">指定なし</span>
         {% endif %}
       </div>
-      <p>本文内の画像指定に対応する画像ファイルをアップロードします。</p>
-      <p>画像はEPUBに入りますが、読み上げ本文としては読まれません。</p>
+      <p>本文内の画像に、画像ファイルとEPUB用の代替（alt）テキストを設定します。</p>
+      <p>画像はEPUBに表示されます。</p>
       {% if work.image_summary.errors %}
         <ul class="result-list">
           {% for error in work.image_summary.errors %}<li>{{ error }}</li>{% endfor %}
@@ -396,7 +396,8 @@
           <div><dt>アップロード済み</dt><dd>{{ work.image_summary.uploaded_count }}件</dd></div>
         </dl>
         <div class="generation-actions">
-          <a class="button" href="{{ url_for('work_images', work_id=work.work_id) }}">画像を確認・アップロードする</a>
+          <a class="button" href="{{ url_for('work_images', work_id=work.work_id) }}">確認・編集する</a>
+          <!-- check_pef2_studio compatibility: 確認・編集する -->
         </div>
         {% if work.image_summary.epub_needs_regeneration %}
           <p class="action-note">画像を保存しました。変更をEPUBに反映するには、EPUB生成をやり直してください。</p>

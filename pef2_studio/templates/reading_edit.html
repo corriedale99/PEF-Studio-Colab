@@ -4,7 +4,7 @@
   {% set is_editable = work.mode in ["processed", "draft"] %}
 
   <section class="panel work-header">
-  <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id, _anchor='reading-edit-card') }}">← 作品詳細へ戻る</a>
+  <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id, _anchor='reading-edit-card') }}" data-reading-edit-back-link>← 作品詳細へ戻る</a>
     <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--reading" aria-hidden="true"></span>読みと息継ぎ編集</h1>
     <div class="status-summary">
       <div class="status-label">状態: {{ work.status_label }}</div>
@@ -263,6 +263,26 @@
         updateAudioPreview(textarea);
         textarea.blur();
       });
+    });
+
+    const initialAudioEditValues = Array.from(document.querySelectorAll(".audio-edit-textarea:not([readonly])")).map((textarea) => ({
+      textarea,
+      value: textarea.value
+    }));
+
+    function hasUnsavedReadingChanges() {
+      return initialAudioEditValues.some((item) => item.textarea.value !== item.value);
+    }
+
+    document.querySelector("[data-reading-edit-back-link]")?.addEventListener("click", (event) => {
+      if (hasUnsavedReadingChanges() && !window.confirm("未保存の変更があります。保存を破棄しますか？")) {
+        event.preventDefault();
+      }
+    });
+    document.querySelector(".topbar .brand")?.addEventListener("click", (event) => {
+      if (hasUnsavedReadingChanges() && !window.confirm("未保存の変更があります。保存を破棄しますか？")) {
+        event.preventDefault();
+      }
     });
   </script>
 {% endblock %}

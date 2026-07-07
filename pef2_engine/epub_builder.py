@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from pef2_engine import workspace_paths
+from pef2_engine.image_alt_review import image_dimensions
 from pef2_engine.io_utils import read_json, write_json
 
 
@@ -35,7 +36,7 @@ def generate_epub_for_work(
     workspace_root: Path | None = None,
     *,
     now: datetime | None = None,
-    allow_missing_images: bool = False,
+    allow_missing_images: bool = True,
 ) -> dict:
     work_dir = Path(work_dir)
     workspace_root = Path(workspace_root) if workspace_root is not None else work_dir.parent
@@ -87,6 +88,8 @@ def _preflight(work_dir: Path, workspace_root: Path, report: dict, *, allow_miss
     audio_path = work_dir / "audio" / AUDIO_FILENAME
     sync_path = work_dir / "audio" / SYNC_MAP_FILENAME
     images_dir = work_dir / "images"
+    alt_review = _load_image_alt_review(work_dir, report)
+    alt_items_by_segment = _image_alt_items_by_segment(alt_review, report)
 
     processed = _read_required_json(
         processed_path,
@@ -125,6 +128,7 @@ def _preflight(work_dir: Path, workspace_root: Path, report: dict, *, allow_miss
             sync_by_index[int(segment["index"])],
             images_dir,
             report,
+            alt_items_by_segment=alt_items_by_segment,
             allow_missing_images=allow_missing_images,
         )
         if epub_segment:
@@ -378,6 +382,7 @@ def _make_epub_segment(
     images_dir: Path,
     report: dict,
     *,
+    alt_items_by_segment: dict[int, dict],
     allow_missing_images: bool,
 ) -> dict | None:
     index = int(segment["index"])
@@ -398,10 +403,14 @@ def _make_epub_segment(
         "line_start": bool(segment.get("line_start")),
     }
     if kind == "image":
+        alt_text, alt_empty = _resolve_image_alt(index, alt_items_by_segment)
+        if alt_empty:
+            report["alt_empty_count"] = int(report.get("alt_empty_count") or 0) + 1
         image_file = segment.get("image_file")
         if not isinstance(image_file, str) or not image_file.strip():
             if allow_missing_images:
                 image_item = _missing_image_item("", images_dir, index)
+                image_item["alt"] = alt_text
                 report["warnings"].append(
                     _warning(
                         "missing_images",
@@ -418,6 +427,7 @@ def _make_epub_segment(
         image_item = _resolve_image(image_file, images_dir, index, report, allow_missing_images=allow_missing_images)
         if image_item is None:
             return None
+        image_item["alt"] = alt_text
         epub_segment["image"] = image_item
     return epub_segment
 
@@ -440,18 +450,46 @@ def _resolve_image(
 ) -> dict | None:
     raw = image_file.strip().replace("\\", "/")
     if raw.startswith("/"):
+        if allow_missing_images:
+            return _unavailable_image_item(
+                image_file,
+                images_dir,
+                index,
+                report,
+                reason="invalid_image_file",
+                message="image_file must be relative; fallback text was inserted",
+            )
         report["errors"].append(_error("invalid_image_file", "image_file must be relative", index=index, image_file=image_file))
         return None
     parts = [part for part in raw.split("/") if part]
     if parts and parts[0] == "images":
         parts = parts[1:]
     if len(parts) != 1 or parts[0] in {".", ".."} or ".." in parts[0]:
+        if allow_missing_images:
+            return _unavailable_image_item(
+                image_file,
+                images_dir,
+                index,
+                report,
+                reason="invalid_image_file",
+                message="image_file must point to a file in images/; fallback text was inserted",
+            )
         report["errors"].append(_error("invalid_image_file", "image_file must point to a file in images/", index=index, image_file=image_file))
         return None
     filename = parts[0]
     extension = Path(filename).suffix.lower()
     media_type = IMAGE_MEDIA_TYPES.get(extension)
     if media_type is None:
+        if allow_missing_images:
+            return _unavailable_image_item(
+                image_file,
+                images_dir,
+                index,
+                report,
+                filename=filename,
+                reason="unsupported_image_type",
+                message="image type is unsupported; fallback text was inserted",
+            )
         report["errors"].append(_error("unsupported_image_type", "image type must be png, jpg, or jpeg", index=index, image_file=image_file))
         return None
     source = images_dir / filename
@@ -471,7 +509,30 @@ def _resolve_image(
         report["errors"].append(_error("missing_image", "image_file is missing", index=index, image_file=image_file, path=str(source)))
         return None
     if not source.is_file():
+        if allow_missing_images:
+            return _unavailable_image_item(
+                image_file,
+                images_dir,
+                index,
+                report,
+                filename=filename,
+                reason="invalid_image_path",
+                message="image_file is not a file; fallback text was inserted",
+            )
         report["errors"].append(_error("invalid_image_path", "image_file is not a file", index=index, image_file=image_file, path=str(source)))
+        return None
+    if not _image_file_readable(source):
+        if allow_missing_images:
+            return _unavailable_image_item(
+                image_file,
+                images_dir,
+                index,
+                report,
+                filename=filename,
+                reason="unreadable_image",
+                message="image_file is unreadable or broken; fallback text was inserted",
+            )
+        report["errors"].append(_error("unreadable_image", "image_file is unreadable or broken", index=index, image_file=image_file, path=str(source)))
         return None
     return {
         "filename": filename,
@@ -484,16 +545,46 @@ def _resolve_image(
 def _missing_image_item(image_file: str, images_dir: Path, index: int, *, filename: str | None = None) -> dict:
     fallback_filename = filename or Path(str(image_file).replace("\\", "/")).name
     searched_path = images_dir / fallback_filename if fallback_filename else images_dir
+    display_image_file = f"images/{fallback_filename}" if fallback_filename else str(image_file or "")
     return {
         "filename": fallback_filename,
         "href": "",
         "source": None,
         "media_type": "",
         "missing": True,
-        "image_file": image_file,
+        "image_file": display_image_file,
         "searched_path": searched_path,
         "index": index,
     }
+
+
+def _unavailable_image_item(
+    image_file: str,
+    images_dir: Path,
+    index: int,
+    report: dict,
+    *,
+    reason: str,
+    message: str,
+    filename: str | None = None,
+) -> dict:
+    image_item = _missing_image_item(image_file, images_dir, index, filename=filename)
+    report["warnings"].append(
+        _warning(
+            "missing_images",
+            message,
+            index=index,
+            image_file=image_item["image_file"],
+            path=str(image_item["searched_path"]),
+            reason=reason,
+        )
+    )
+    return image_item
+
+
+def _image_file_readable(path: Path) -> bool:
+    width, height = image_dimensions(path)
+    return width is not None and height is not None
 
 
 def _container_xml() -> str:
@@ -548,12 +639,12 @@ def _text_xhtml(context: dict) -> str:
                 image_label = image.get("image_file") or "不明"
                 lines.append(
                     f"  <div class=\"img-box\"><span id=\"{segment['sid']}\"></span>"
-                    f"<div class=\"missing-image\">画像ファイルが見つかりません: {_xml_text(image_label)}</div></div>"
+                    f"<div class=\"missing-image\">画像ファイルがみつかりません: {_xml_text(image_label)}</div></div>"
                 )
             else:
                 lines.append(
                     f"  <div class=\"img-box\"><span id=\"{segment['sid']}\"></span>"
-                    f"&#x3000;&#x3000;&#x3000;<img src=\"{_xml_attr(image['href'])}\" alt=\"image\" /></div>"
+                    f"&#x3000;&#x3000;&#x3000;<img src=\"{_xml_attr(image['href'])}\" alt=\"{_xml_attr(image.get('alt', ''))}\" /></div>"
                 )
         else:
             if not paragraph_open or segment["para_start"]:
@@ -735,6 +826,79 @@ def _read_required_json(path: Path, missing_code: str, invalid_code: str, report
     return None
 
 
+def _load_image_alt_review(work_dir: Path, report: dict) -> dict:
+    path = workspace_paths.image_alt_review_path(work_dir)
+    report["image_alt_review"] = {
+        "loaded": False,
+        "path": path.name,
+        "items": 0,
+    }
+    if not path.exists():
+        return {}
+    try:
+        review = read_json(path)
+    except Exception as error:
+        report["warnings"].append(
+            _warning("image_alt_review_unreadable", f"{type(error).__name__}: {error}", path=str(path))
+        )
+        return {}
+    if not isinstance(review, dict):
+        report["warnings"].append(_warning("image_alt_review_invalid", "image_alt_review.json top-level must be object"))
+        return {}
+    items = review.get("items")
+    report["image_alt_review"] = {
+        "loaded": True,
+        "path": path.name,
+        "items": len(items) if isinstance(items, list) else 0,
+    }
+    return review
+
+
+def _image_alt_items_by_segment(review: dict, report: dict) -> dict[int, dict]:
+    items = review.get("items")
+    if not isinstance(items, list):
+        return {}
+    by_segment: dict[int, dict] = {}
+    duplicates: set[int] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        index = _coerce_nonnegative_index(item.get("segment_index"))
+        if index is None:
+            continue
+        if index in by_segment:
+            duplicates.add(index)
+            continue
+        by_segment[index] = item
+    for index in sorted(duplicates):
+        by_segment.pop(index, None)
+        report["warnings"].append(
+            _warning("image_alt_review_duplicate_segment", "duplicate segment_index was ignored", index=index)
+        )
+    return by_segment
+
+
+def _resolve_image_alt(index: int, alt_items_by_segment: dict[int, dict]) -> tuple[str, bool]:
+    item = alt_items_by_segment.get(index)
+    if not isinstance(item, dict):
+        return "", True
+    if item.get("is_decorative") is True:
+        return "", False
+    user_alt = _clean_alt(item.get("user_alt_ja"))
+    if user_alt:
+        return user_alt, False
+    gemini_alt = _clean_alt(item.get("gemini_alt_ja"))
+    if gemini_alt:
+        return gemini_alt, False
+    return "", True
+
+
+def _clean_alt(value: object) -> str:
+    if value is None:
+        return ""
+    return _remove_invalid_xml_chars(str(value)).strip()
+
+
 def _resolve_title(processed: object, work_dir: Path) -> str:
     if isinstance(processed, dict):
         title = str(processed.get("title") or "").strip()
@@ -801,6 +965,14 @@ def _is_nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _coerce_nonnegative_index(value: object) -> int | None:
+    if _is_nonnegative_int(value):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
@@ -816,6 +988,12 @@ def _new_report(work_dir: Path) -> dict:
         "input_sync_map": "audio/sync_map.json",
         "output_epub": "",
         "allow_missing_images": False,
+        "alt_empty_count": 0,
+        "image_alt_review": {
+            "loaded": False,
+            "path": "image_alt_review.json",
+            "items": 0,
+        },
         "segments": 0,
         "sync_map_count": 0,
         "images": [],

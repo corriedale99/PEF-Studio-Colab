@@ -8,6 +8,7 @@ from pef2_engine import workspace_paths
 from pef2_engine.epub_builder import EPUB_BUILD_REPORT_FILENAME, generate_epub_for_work
 from pef2_engine.gemini_dictionary_review import AIDictionaryReviewCancelled
 from pef2_engine.generation_lock import acquire_generation_lock, release_generation_lock
+from pef2_engine.image_alt_generator import ImageAltGenerationCancelled, run_image_alt_generation
 from pef2_engine.io_utils import read_json, write_json
 from pef2_engine.tts_generator import (
     AUDIO_FILENAME,
@@ -58,11 +59,17 @@ TTS_CANCELLED_MESSAGE = "音声生成をキャンセルしました。"
 TTS_CANCEL_UNAVAILABLE_MESSAGE = "音声生成はすでに完了しているため、キャンセルできません。"
 AI_DICTIONARY_CANCELLED_MESSAGE = "辞書候補生成をキャンセルしました。"
 AI_DICTIONARY_CANCEL_UNAVAILABLE_MESSAGE = "辞書候補生成はすでに完了しているため、キャンセルできません。"
+IMAGE_ALT_RUNNING_MESSAGE = "画像alt生成中"
+IMAGE_ALT_FAILED_MESSAGE = "画像alt生成に失敗しました。"
+IMAGE_ALT_CANCELLED_MESSAGE = "画像alt生成をキャンセルしました。"
+IMAGE_ALT_CANCEL_UNAVAILABLE_MESSAGE = "画像alt生成はすでに完了しているため、キャンセルできません。"
 
 _TTS_TASKS: dict[str, dict[str, Any]] = {}
 _TTS_TASKS_LOCK = Lock()
 _AI_DICTIONARY_TASKS: dict[str, dict[str, Any]] = {}
 _AI_DICTIONARY_TASKS_LOCK = Lock()
+_IMAGE_ALT_TASKS: dict[str, dict[str, Any]] = {}
+_IMAGE_ALT_TASKS_LOCK = Lock()
 
 
 def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
@@ -355,6 +362,130 @@ def cancel_ai_dictionary_review_task(workspace_root: Path, work_id: str, task_id
     }
 
 
+def start_image_alt_generation_task(
+    workspace_root: Path,
+    work_id: str,
+    *,
+    segment_index: str = "",
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+
+    task_id = create_task_id("image_alt")
+    lock_result = acquire_generation_lock(work_dir, "image_alt", task_id=task_id)
+    if not lock_result.get("ok"):
+        return _task_start_failed(_lock_result("image_alt", work_dir, lock_result))
+
+    lock_data = lock_result.get("lock")
+    cancel_event = Event()
+    _register_image_alt_task(task_id, work_dir.name, cancel_event)
+    progress = new_progress(
+        work_dir,
+        task_id=task_id,
+        operation="image_alt",
+        status="running",
+        phase="画像alt生成中",
+        message=IMAGE_ALT_RUNNING_MESSAGE,
+        lock_started_at=str(lock_data.get("started_at") or "") if isinstance(lock_data, dict) else "",
+        result={"segment_index": str(segment_index or "")},
+    )
+    progress["cancellable"] = True
+    write_progress(work_dir, progress)
+
+    thread = Thread(
+        target=_run_image_alt_generation_task,
+        name=f"pef2-image-alt-{task_id}",
+        args=(Path(workspace_root), work_dir, task_id, lock_data, cancel_event, str(segment_index or "")),
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception as error:
+        update_progress(
+            work_dir,
+            task_id,
+            status="failed",
+            phase="画像alt生成失敗",
+            message=IMAGE_ALT_FAILED_MESSAGE,
+            error={"message": f"{type(error).__name__}: {error}"},
+            cancellable=False,
+        )
+        release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _unregister_image_alt_task(task_id)
+        return {
+            "ok": False,
+            "status": "failed",
+            "message": IMAGE_ALT_FAILED_MESSAGE,
+            "task_id": task_id,
+            "progress": read_progress(work_dir, task_id),
+        }
+
+    return {
+        "ok": True,
+        "status": "started",
+        "message": IMAGE_ALT_RUNNING_MESSAGE,
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
+def load_image_alt_generation_progress(workspace_root: Path, work_id: str, task_id: str) -> dict | None:
+    if not is_valid_task_id(task_id, operation="image_alt"):
+        return None
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    return read_progress(work_dir, task_id)
+
+
+def cancel_image_alt_generation_task(workspace_root: Path, work_id: str, task_id: str) -> dict | None:
+    if not is_valid_task_id(task_id, operation="image_alt"):
+        return None
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    progress = read_progress(work_dir, task_id)
+    if progress is None:
+        return None
+
+    with _IMAGE_ALT_TASKS_LOCK:
+        task = _IMAGE_ALT_TASKS.get(task_id)
+        if task is None or task.get("work_id") != work_dir.name:
+            return _image_alt_cancel_unavailable_result(task_id, progress)
+        state = str(task.get("state") or "")
+        if state == "cancelling":
+            return {
+                "ok": True,
+                "status": "cancelling",
+                "message": "キャンセル中",
+                "task_id": task_id,
+                "progress": progress,
+            }
+        if state != "running":
+            return _image_alt_cancel_unavailable_result(task_id, progress)
+        task["state"] = "cancelling"
+        progress = update_progress(
+            work_dir,
+            task_id,
+            status="cancelling",
+            phase="キャンセル中",
+            message="キャンセル中",
+            cancellable=False,
+            cancel_requested=True,
+        ) or progress
+        cancel_event = task.get("event")
+        if isinstance(cancel_event, Event):
+            cancel_event.set()
+    return {
+        "ok": True,
+        "status": "cancelling",
+        "message": "キャンセル中",
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
 def load_latest_blocked_generation_result(workspace_root: Path, work_id: str) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
@@ -533,6 +664,16 @@ def _ai_dictionary_cancel_unavailable_result(task_id: str, progress: dict) -> di
     }
 
 
+def _image_alt_cancel_unavailable_result(task_id: str, progress: dict) -> dict:
+    return {
+        "ok": False,
+        "status": "not_cancellable",
+        "message": IMAGE_ALT_CANCEL_UNAVAILABLE_MESSAGE,
+        "task_id": task_id,
+        "progress": progress,
+    }
+
+
 def _run_ai_dictionary_review_task(
     workspace_root: Path,
     work_dir: Path,
@@ -608,6 +749,98 @@ def _set_ai_dictionary_task_state(task_id: str, state: str) -> None:
         task = _AI_DICTIONARY_TASKS.get(task_id)
         if task is not None:
             task["state"] = state
+
+
+def _run_image_alt_generation_task(
+    workspace_root: Path,
+    work_dir: Path,
+    task_id: str,
+    lock_data: object,
+    cancel_event: Event,
+    segment_index: str,
+) -> None:
+    try:
+        try:
+            result = run_image_alt_generation(
+                work_dir,
+                workspace_paths.PROJECT_ROOT,
+                segment_index=segment_index,
+                cancel_event=cancel_event,
+                progress_callback=lambda event: _update_image_alt_running_progress(work_dir, task_id, event),
+            )
+        except ImageAltGenerationCancelled:
+            _set_image_alt_task_state(task_id, "cancelled")
+            update_progress(
+                work_dir,
+                task_id,
+                status="cancelled",
+                phase="画像alt生成キャンセル",
+                message=IMAGE_ALT_CANCELLED_MESSAGE,
+                result=None,
+                error=None,
+                cancellable=False,
+                cancel_requested=True,
+            )
+            return
+        except Exception as error:
+            result = _exception_result("image_alt", work_dir, error)
+
+        status = "completed" if result.get("ok") else "failed"
+        _set_image_alt_task_state(task_id, status)
+        update_progress(
+            work_dir,
+            task_id,
+            status=status,
+            phase="画像alt生成完了" if status == "completed" else "画像alt生成失敗",
+            message=str(result.get("message") or (IMAGE_ALT_RUNNING_MESSAGE if status == "completed" else IMAGE_ALT_FAILED_MESSAGE)),
+            result=_image_alt_progress_result(work_dir, result),
+            error=None if status == "completed" else _image_alt_progress_error(result),
+            cancellable=False,
+        )
+    finally:
+        release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _unregister_image_alt_task(task_id)
+
+
+def _register_image_alt_task(task_id: str, work_id: str, cancel_event: Event) -> None:
+    with _IMAGE_ALT_TASKS_LOCK:
+        _IMAGE_ALT_TASKS[task_id] = {
+            "work_id": work_id,
+            "event": cancel_event,
+            "state": "running",
+        }
+
+
+def _unregister_image_alt_task(task_id: str) -> None:
+    with _IMAGE_ALT_TASKS_LOCK:
+        _IMAGE_ALT_TASKS.pop(task_id, None)
+
+
+def _set_image_alt_task_state(task_id: str, state: str) -> None:
+    with _IMAGE_ALT_TASKS_LOCK:
+        task = _IMAGE_ALT_TASKS.get(task_id)
+        if task is not None:
+            task["state"] = state
+
+
+def _update_image_alt_running_progress(work_dir: Path, task_id: str, event: dict[str, Any]) -> None:
+    current = _safe_int(event.get("current"))
+    total = _safe_int(event.get("total"))
+    percent = int(current * 100 / total) if total else None
+    update_progress(
+        work_dir,
+        task_id,
+        status="running",
+        phase="画像alt生成中",
+        message=str(event.get("message") or IMAGE_ALT_RUNNING_MESSAGE),
+        percent=percent,
+        result={
+            "current": current,
+            "total": total,
+            "current_image": str(event.get("image_path") or ""),
+        },
+        cancellable=True,
+    )
 
 
 def _begin_ai_dictionary_commit(work_dir: Path, task_id: str) -> bool:
@@ -744,6 +977,30 @@ def _ai_dictionary_progress_error(result: dict) -> dict:
     }
 
 
+def _image_alt_progress_result(work_dir: Path, result: dict) -> dict:
+    return {
+        "generation_kind": "image_alt",
+        "status": result.get("status"),
+        "ok": bool(result.get("ok")),
+        "message": result.get("message") or "",
+        "model": result.get("model") or "",
+        "request_mode": result.get("request_mode") or "",
+        "target_count": _safe_int(result.get("target_count")),
+        "success_count": _safe_int(result.get("success_count")),
+        "failed_count": _safe_int(result.get("failed_count")),
+        "skipped_count": _safe_int(result.get("skipped_count")),
+        "review_path": _rel_work_path(work_dir, workspace_paths.IMAGE_ALT_REVIEW_FILENAME),
+        "skipped_items": list(result.get("skipped_items") or [])[:8],
+    }
+
+
+def _image_alt_progress_error(result: dict) -> dict:
+    return {
+        "message": result.get("message") or IMAGE_ALT_FAILED_MESSAGE,
+        "details": list(result.get("errors") or [])[:5],
+    }
+
+
 def _ai_dictionary_preflight_lines(result: dict) -> list[str]:
     lines = ["preflightで停止しました。"]
     for key in ("failed_stage", "error_type", "affected_file"):
@@ -851,7 +1108,7 @@ def _voice_preview_result(report: dict, output_path: Path, work_id: str) -> dict
     }
 
 
-def run_epub_generation(workspace_root: Path, work_id: str, *, allow_missing_images: bool = False) -> dict | None:
+def run_epub_generation(workspace_root: Path, work_id: str, *, allow_missing_images: bool = True) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
         return None

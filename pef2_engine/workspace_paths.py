@@ -26,6 +26,7 @@ PROCESSED_REPORT_FILENAME = "02_processed_report.json"
 PROCESSED_DRAFT_FILENAME = "03_processed_draft.json"
 EDITING_SESSION_FILENAME = "03_editing_session.json"
 PROCESSED_FINAL_FILENAME = "04_processed_final.json"
+IMAGE_ALT_REVIEW_FILENAME = "image_alt_review.json"
 
 WORK_META_SCHEMA_VERSION = "work_meta-1"
 JST = timezone(timedelta(hours=9))
@@ -176,6 +177,10 @@ def editing_session_path(work_dir: Path) -> Path:
 
 def processed_final_path(work_dir: Path) -> Path:
     return work_dir / PROCESSED_FINAL_FILENAME
+
+
+def image_alt_review_path(work_dir: Path) -> Path:
+    return work_dir / IMAGE_ALT_REVIEW_FILENAME
 
 
 def display_path(path: Path, base: Path) -> str:

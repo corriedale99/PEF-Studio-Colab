@@ -51,6 +51,10 @@ from pef2_studio.workspace_view import (
     normalize_works_sort,
     save_work_draft,
     save_work_final,
+    save_work_image_alt_settings_submission,
+    save_work_image_alt_target_submission,
+    save_work_image_alt_targets_submission,
+    save_work_image_alt_review_submission,
     save_work_image_upload,
     save_work_tts_settings_submission,
     save_workspace_tts_settings_submission,
@@ -73,7 +77,9 @@ from pef2_engine.generation_lock import (
 from pef2_studio.generation import (
     build_generation_notice_result,
     cancel_ai_dictionary_review_task,
+    cancel_image_alt_generation_task,
     cancel_tts_generation_task,
+    load_image_alt_generation_progress,
     load_ai_dictionary_review_progress,
     load_latest_blocked_generation_result,
     load_tts_generation_progress,
@@ -82,6 +88,7 @@ from pef2_studio.generation import (
     run_voice_preview_generation,
     run_workspace_voice_preview_generation,
     start_ai_dictionary_review_task,
+    start_image_alt_generation_task,
     start_tts_generation_task,
 )
 from pef2_studio.generation_progress import is_valid_task_id
@@ -279,7 +286,13 @@ def create_app(workspace_root: Path | None = None):
 
     @app.get("/works/<work_id>/images")
     def work_images(work_id: str):
-        page = load_work_images_page(resolved_workspace_root, work_id)
+        page = load_work_images_page(
+            resolved_workspace_root,
+            work_id,
+            selected_segment_index=request.args.get("selected"),
+            show_decorative=request.args.get("show_decorative") == "1",
+            show_thumbnails=request.args.get("show_thumbnails", "1") == "1",
+        )
         if page is None:
             abort(404)
         return render_template(
@@ -288,11 +301,132 @@ def create_app(workspace_root: Path | None = None):
             page=page,
         )
 
-    @app.post("/works/<work_id>/images/<segment_index>/upload")
-    def upload_work_image(work_id: str, segment_index: str):
+    @app.post("/works/<work_id>/images/alt-targets")
+    def save_work_image_alt_targets(work_id: str):
+        show_decorative = request.form.get("show_decorative") == "1"
+        show_thumbnails = request.form.get("show_thumbnails", "1") == "1"
+        selected_segment_index = request.form.get("selected")
         lock_result = _guard_generation_lock_for_post(work_id)
         if lock_result is not None:
-            page = load_work_images_page(resolved_workspace_root, work_id, result=lock_result)
+            page = load_work_images_page(
+                resolved_workspace_root,
+                work_id,
+                result=lock_result,
+                selected_segment_index=selected_segment_index,
+                show_decorative=show_decorative,
+                show_thumbnails=show_thumbnails,
+            )
+            if page is None:
+                abort(404)
+            return (
+                render_template(
+                    "work_images.html",
+                    workspace_root=resolved_workspace_root,
+                    page=page,
+                ),
+                _lock_status_code(lock_result),
+            )
+        result = save_work_image_alt_targets_submission(
+            resolved_workspace_root,
+            work_id,
+            show_decorative=show_decorative,
+            send_to_ai=request.form.get("send_to_ai") == "1",
+        )
+        if result is None:
+            abort(404)
+        result_for_page = None if result.get("status") == "success" else result
+        page = load_work_images_page(
+            resolved_workspace_root,
+            work_id,
+            result=result_for_page,
+            selected_segment_index=selected_segment_index,
+            show_decorative=show_decorative,
+            show_thumbnails=show_thumbnails,
+        )
+        if page is None:
+            abort(404)
+        return (
+            render_template(
+                "work_images.html",
+                workspace_root=resolved_workspace_root,
+                page=page,
+            ),
+            200 if result.get("status") == "success" else 400,
+        )
+
+    @app.post("/works/<work_id>/images/<segment_index>/alt-target")
+    def save_work_image_alt_target(work_id: str, segment_index: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "locked",
+                    "message": str(lock_result.get("message") or "生成中のため保存できません。"),
+                },
+                _lock_status_code(lock_result),
+            )
+        result = save_work_image_alt_target_submission(
+            resolved_workspace_root,
+            work_id,
+            segment_index,
+            send_to_ai=request.form.get("send_to_ai") == "1",
+        )
+        if result is None:
+            abort(404)
+        return _json_response(
+            {
+                "ok": result.get("status") == "success",
+                "status": result.get("status"),
+                "message": result.get("message"),
+                "send_to_ai": request.form.get("send_to_ai") == "1" and result.get("status") == "success",
+            },
+            200 if result.get("status") == "success" else 400,
+        )
+
+    @app.post("/works/<work_id>/images/settings")
+    def save_work_image_alt_settings(work_id: str):
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "locked",
+                    "message": str(lock_result.get("message") or "生成中のため保存できません。"),
+                },
+                _lock_status_code(lock_result),
+            )
+        result = save_work_image_alt_settings_submission(
+            resolved_workspace_root,
+            work_id,
+            request.form,
+        )
+        if result is None:
+            abort(404)
+        return _json_response(
+            {
+                "ok": result.get("status") == "success",
+                "status": result.get("status"),
+                "message": result.get("message"),
+                "alt_length_target": result.get("alt_length_target"),
+            },
+            200 if result.get("status") == "success" else 400,
+        )
+
+    @app.post("/works/<work_id>/images/<segment_index>/upload")
+    def upload_work_image(work_id: str, segment_index: str):
+        show_decorative = request.form.get("show_decorative") == "1"
+        show_thumbnails = request.form.get("show_thumbnails", "1") == "1"
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            page = load_work_images_page(
+                resolved_workspace_root,
+                work_id,
+                result=lock_result,
+                selected_segment_index=segment_index,
+                show_decorative=show_decorative,
+                show_thumbnails=show_thumbnails,
+            )
             if page is None:
                 abort(404)
             return (
@@ -311,7 +445,14 @@ def create_app(workspace_root: Path | None = None):
         )
         if result is None:
             abort(404)
-        page = load_work_images_page(resolved_workspace_root, work_id, result=result)
+        page = load_work_images_page(
+            resolved_workspace_root,
+            work_id,
+            result=result,
+            selected_segment_index=segment_index,
+            show_decorative=show_decorative,
+            show_thumbnails=show_thumbnails,
+        )
         if page is None:
             abort(404)
         return (
@@ -322,6 +463,130 @@ def create_app(workspace_root: Path | None = None):
             ),
             200 if result.get("status") == "success" else 400,
         )
+
+    @app.post("/works/<work_id>/images/<segment_index>/alt")
+    def save_work_image_alt_review(work_id: str, segment_index: str):
+        show_decorative = request.form.get("show_decorative") == "1"
+        show_thumbnails = request.form.get("show_thumbnails", "1") == "1"
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            page = load_work_images_page(
+                resolved_workspace_root,
+                work_id,
+                result=lock_result,
+                selected_segment_index=segment_index,
+                show_decorative=show_decorative,
+                show_thumbnails=show_thumbnails,
+            )
+            if page is None:
+                abort(404)
+            return (
+                render_template(
+                    "work_images.html",
+                    workspace_root=resolved_workspace_root,
+                    page=page,
+                ),
+                _lock_status_code(lock_result),
+            )
+        result = save_work_image_alt_review_submission(
+            resolved_workspace_root,
+            work_id,
+            segment_index,
+            request.form,
+        )
+        if result is None:
+            abort(404)
+        page = load_work_images_page(
+            resolved_workspace_root,
+            work_id,
+            result=result,
+            selected_segment_index=segment_index,
+            show_decorative=show_decorative,
+            show_thumbnails=show_thumbnails,
+        )
+        if page is None:
+            abort(404)
+        return (
+            render_template(
+                "work_images.html",
+                workspace_root=resolved_workspace_root,
+                page=page,
+            ),
+            200 if result.get("status") == "success" else 400,
+        )
+
+    @app.post("/works/<work_id>/images/alt-generation/start")
+    def start_image_alt_generation(work_id: str):
+        result = start_image_alt_generation_task(
+            resolved_workspace_root,
+            work_id,
+            segment_index=str(request.form.get("segment_index") or ""),
+        )
+        if result is None:
+            abort(404)
+        return _json_response(result, _task_start_status_code(result))
+
+    @app.get("/works/<work_id>/images/alt-generation/progress/<task_id>")
+    def image_alt_generation_progress(work_id: str, task_id: str):
+        if not is_valid_task_id(task_id, operation="image_alt"):
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "invalid_task_id",
+                    "message": "進捗情報を確認できませんでした。",
+                },
+                400,
+            )
+        progress = load_image_alt_generation_progress(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if progress is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "message": "進捗情報が見つかりません。画面を再読み込みしてください。",
+                },
+                404,
+            )
+        return _json_response(
+            {
+                "ok": True,
+                "status": progress.get("status"),
+                "message": progress.get("message"),
+                "progress": progress,
+            },
+            200,
+        )
+
+    @app.post("/works/<work_id>/images/alt-generation/cancel/<task_id>")
+    def cancel_image_alt_generation(work_id: str, task_id: str):
+        if not is_valid_task_id(task_id, operation="image_alt"):
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "invalid_task_id",
+                    "message": "進捗情報を確認できませんでした。",
+                },
+                400,
+            )
+        result = cancel_image_alt_generation_task(
+            resolved_workspace_root,
+            work_id,
+            task_id,
+        )
+        if result is None:
+            return _json_response(
+                {
+                    "ok": False,
+                    "status": "not_found",
+                    "message": "進捗情報が見つかりません。画面を再読み込みしてください。",
+                },
+                404,
+            )
+        return _json_response(result, _generation_status_code(result))
 
     @app.get("/works/<work_id>/images/<segment_index>/file")
     def work_image_file(work_id: str, segment_index: str):
@@ -767,7 +1032,7 @@ def create_app(workspace_root: Path | None = None):
         result = run_epub_generation(
             resolved_workspace_root,
             work_id,
-            allow_missing_images=request.form.get("allow_missing_images") == "1",
+            allow_missing_images=True,
         )
         if result is None:
             abort(404)

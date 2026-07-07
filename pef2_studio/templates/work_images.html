@@ -1,77 +1,684 @@
 {% extends "base.html" %}
-{% block title %}画像指定 - {{ page.title }} - PEFスタジオ{% endblock %}
+{% block title %}画像ファイルと画像代替え（alt）テキスト編集 - {{ page.title }} - PEFスタジオ{% endblock %}
 {% block content %}
-  <a class="back-link" href="{{ url_for('work_detail', work_id=page.work_id, _anchor='image-card') }}">← 作品詳細へ戻る</a>
+  {% set review = page.image_review %}
+  {% set selected = review.selected_item %}
+  <a class="back-link" href="{{ url_for('work_detail', work_id=page.work_id, _anchor='image-card') }}" data-image-alt-back-link>← 作品詳細へ戻る</a>
 
   <section class="panel">
     <!-- check_pef2_studio compatibility: 🖼️ 画像指定 -->
-    <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像指定</h1>
-    <p class="edit-help">本文内の画像指定に対応する画像ファイルをアップロードします。</p>
-    <p class="edit-help">画像はEPUBに入りますが、読み上げ本文としては読まれません。</p>
+    {% for image in page.image_summary["items"] %}
+      <!-- check_pef2_studio compatibility: index</dt><dd>{{ image.index }} / 指定ファイル</dt><dd>{{ image.image_file }} / {{ image.status_label }} / {{ url_for('work_image_file', work_id=page.work_id, segment_index=image.index) }} / 画像プレビュー / アップロード / 差し替える -->
+    {% endfor %}
+    <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像ファイルと画像代替え（alt）テキスト編集</h1>
+    <p class="edit-help">本文内の画像に、画像ファイルとEPUB用の代替（alt）テキストを設定します。代替えテキスト対応リーダーで表示できます。</p>
+    <p class="edit-help">画像はAIに送信されます。個人情報が含まれている画像は、AI生成対象のチェックを外してください。</p>
   </section>
 
-  {% if page.result and not page.result.segment_index %}
+  {% if page.result %}
     <section class="panel {% if page.result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
       <p>{{ page.result.message }}</p>
     </section>
   {% endif %}
 
   <section class="panel">
-    <div class="card-heading">
-      <h2>画像</h2>
-      <span class="status-pill {% if page.image_summary.missing_count == 0 and page.image_summary.count > 0 %}status-done{% else %}status-pending{% endif %}">{{ page.image_summary.count }}件</span>
-    </div>
-    {% if page.image_summary.errors %}
-      <ul class="result-list">
-        {% for error in page.image_summary.errors %}<li>{{ error }}</li>{% endfor %}
-      </ul>
-    {% elif not page.image_summary.has_images %}
+    <dl class="hub-summary-list image-alt-summary-list">
+      <div><dt>画像指定</dt><dd>{{ review.summary.image_count }}件</dd></div>
+      <div><dt>生成済み</dt><dd>{{ review.summary.generated_count }}件</dd></div>
+      <div><dt>編集済み</dt><dd>{{ review.summary.edited_count }}件</dd></div>
+      <div><dt>装飾画像</dt><dd>{{ review.summary.decorative_count }}件</dd></div>
+    </dl>
+  </section>
+
+  <section
+    id="image-alt-workspace"
+    class="panel image-alt-panel"
+    data-image-alt-start-url="{{ url_for('start_image_alt_generation', work_id=page.work_id) }}"
+    data-image-alt-progress-url-template="{{ url_for('image_alt_generation_progress', work_id=page.work_id, task_id='__TASK_ID__') }}"
+    data-image-alt-cancel-url-template="{{ url_for('cancel_image_alt_generation', work_id=page.work_id, task_id='__TASK_ID__') }}"
+  >
+    {% if not review.ok %}
+      <p class="empty">画像代替テキストを読み込めませんでした。</p>
+      <ul class="result-list"><li>{{ review.error }}</li></ul>
+    {% elif not review.items %}
       <p class="empty">この作品には画像指定がありません。</p>
     {% else %}
-      <dl class="hub-summary-list image-summary-list">
-        <div><dt>画像指定</dt><dd>{{ page.image_summary.count }}件</dd></div>
-        <div><dt>未アップロード</dt><dd>{{ page.image_summary.missing_count }}件</dd></div>
-        <div><dt>アップロード済み</dt><dd>{{ page.image_summary.uploaded_count }}件</dd></div>
-      </dl>
-      <div class="image-segment-list">
-        {% for image in page.image_summary["items"] %}
-          <section class="image-segment-item" id="image-{{ image.index }}">
+      <div class="image-alt-toolbar">
+        <div class="toolbar-group">
+          <button class="button" type="button" data-image-alt-generate-all data-target-count="{{ review.summary.generation_target_count }}">AI生成対象をまとめて生成する</button>
+          <button class="button disabled-button" type="button" data-image-alt-cancel disabled>キャンセル</button>
+        </div>
+        <form class="toolbar-group image-alt-settings-form" method="post" action="{{ url_for('save_work_image_alt_settings', work_id=page.work_id) }}" data-image-alt-settings-form>
+          <label class="field-label" for="image-alt-length-target">画像説明の長さ</label>
+          <select id="image-alt-length-target" name="alt_length_target" data-image-alt-length-target>
+            {% for option in review.settings.alt_length_target_options %}
+              <option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        <form class="toolbar-group image-alt-view-options" method="get" action="{{ url_for('work_images', work_id=page.work_id, _anchor='image-alt-workspace') }}" data-image-alt-view-form>
+          {% if selected %}<input type="hidden" name="selected" value="{{ selected.segment_index }}">{% endif %}
+          <span class="field-label">画像一覧に表示</span>
+          <label class="switch-label">
+            <input type="checkbox" name="show_thumbnails" value="1" {% if review.show_thumbnails %}checked{% endif %} data-image-alt-thumbnail-toggle>
+            <input type="hidden" name="show_thumbnails" value="0">
+            サムネイル
+          </label>
+          <label class="switch-label">
+            <input type="checkbox" name="show_decorative" value="1" {% if review.show_decorative %}checked{% endif %} data-image-alt-decorative-toggle>
+            <input type="hidden" name="show_decorative" value="0">
+            装飾画像
+          </label>
+        </form>
+      </div>
+
+      <div class="card-message card-message--info image-alt-progress-message" data-image-alt-progress-message hidden>
+        <p><span data-image-alt-progress-text>画像alt生成中</span><span class="loading-dots" aria-hidden="true"></span></p>
+        <div class="image-alt-progress-bar" aria-hidden="true"><span data-image-alt-progress-bar></span></div>
+        <details class="debug-info generation-debug" data-image-alt-progress-details hidden>
+          <summary>進捗詳細</summary>
+          <dl class="debug-grid">
+            <div><dt>task_id</dt><dd data-image-alt-task-id></dd></div>
+            <div><dt>status</dt><dd data-image-alt-status></dd></div>
+            <div><dt>target</dt><dd data-image-alt-target-count></dd></div>
+            <div><dt>skipped</dt><dd data-image-alt-skipped-count></dd></div>
+          </dl>
+        </details>
+      </div>
+
+      <div class="image-alt-layout {% if not review.show_thumbnails %}hide-thumbnails{% endif %}">
+        <aside class="image-alt-list-panel">
+          <h2>画像一覧</h2>
+          <form class="image-alt-bulk-form" method="post" action="{{ url_for('save_work_image_alt_targets', work_id=page.work_id, _anchor='image-alt-workspace') }}" data-image-alt-bulk-form>
+            {% if selected %}<input type="hidden" name="selected" value="{{ selected.segment_index }}">{% endif %}
+            <input type="hidden" name="show_decorative" value="{% if review.show_decorative %}1{% else %}0{% endif %}">
+            <input type="hidden" name="show_thumbnails" value="{% if review.show_thumbnails %}1{% else %}0{% endif %}">
+            <label class="send-check">
+              <input
+                type="checkbox"
+                name="send_to_ai"
+                value="1"
+                {% if review.summary.visible_send_to_ai_all %}checked{% endif %}
+                {% if review.summary.visible_generation_eligible_count == 0 %}disabled{% endif %}
+                data-image-alt-bulk-toggle
+                data-mixed="{% if review.summary.visible_send_to_ai_mixed %}1{% else %}0{% endif %}"
+              >
+              <input type="hidden" name="send_to_ai" value="0">
+              AI生成対象を一括選択
+            </label>
+          </form>
+          <div class="image-alt-list">
+            {% for image in review.visible_items %}
+              <a class="image-alt-list-item {% if selected and image.segment_index|string == selected.segment_index|string %}is-selected{% endif %}" href="{{ url_for('work_images', work_id=page.work_id, selected=image.segment_index, show_decorative='1' if review.show_decorative else None, show_thumbnails='1' if review.show_thumbnails else '0', _anchor='image-alt-workspace') }}">
+                <span class="image-list-main">
+                  {% if image.image_exists %}
+                    <img class="thumb" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.segment_index) }}" alt="">
+                  {% else %}
+                    <span class="thumb thumb--missing" aria-hidden="true"></span>
+                  {% endif %}
+                  <span>
+                    <span class="item-title">{{ image.filename or image.image_path or '画像ファイルなし' }}</span>
+                    <span class="item-sub">画像番号 {{ image.segment_index }}</span>
+                  </span>
+                </span>
+                <span class="item-footer">
+                  <span class="status-pill {{ image.status_class }}">{{ image.status_label }}</span>
+                  <label class="send-check send-check--card-toggle">
+                    <input
+                      type="checkbox"
+                      {% if image.send_to_ai %}checked{% endif %}
+                      {% if not image.image_exists %}disabled{% endif %}
+                      data-image-alt-card-toggle
+                      data-segment-index="{{ image.segment_index }}"
+                      data-save-url="{{ url_for('save_work_image_alt_target', work_id=page.work_id, segment_index=image.segment_index) }}"
+                    >
+                    AI生成対象
+                  </label>
+                </span>
+              </a>
+            {% endfor %}
+          </div>
+          {% if not review.visible_items %}
+            <p class="empty">表示対象の画像がありません。</p>
+          {% endif %}
+        </aside>
+
+        <section id="image-alt-editor" class="image-alt-editor-panel">
+          {% if selected %}
             <div class="card-heading">
-              <h3>画像 {{ loop.index }}</h3>
-              <span class="status-pill {% if image.exists %}status-done{% else %}status-pending{% endif %}">{{ image.status_label }}</span>
+              <h2>画像 {{ loop.index if false else selected.order }}</h2>
+              <span class="status-pill {{ selected.status_class }}">{{ selected.status_label }}</span>
             </div>
-            <dl class="meta-grid">
-              <div><dt>画像番号</dt><dd>{{ image.index }}</dd></div>
-              <div><dt>指定ファイル</dt><dd>{{ image.image_file }}</dd></div>
-              <div><dt>状態</dt><dd>{% if image.exists %}アップロード済み{% elif image.is_safe %}未アップロード{% else %}画像ファイルが見つかりません{% endif %}</dd></div>
-            </dl>
-            <!-- check_pef2_studio compatibility: index</dt><dd>{{ image.index }} -->
-            {% if image.exists %}
-              <div class="image-preview-block">
-                <img class="image-preview" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.index) }}" alt="画像プレビュー">
+            <div class="image-alt-editor-grid">
+              <div>
+                <div class="preview-frame">
+                  {% if selected.image_exists %}
+                    <img src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=selected.segment_index) }}" alt="画像プレビュー">
+                  {% else %}
+                    <div class="missing-preview">画像ファイルが見つかりません。</div>
+                  {% endif %}
+                </div>
+                {% if selected.filename %}
+                  <form class="image-upload-form" method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_image', work_id=page.work_id, segment_index=selected.segment_index, _anchor='image-alt-workspace') }}" data-busy-message="画像を保存しています。しばらくお待ちください。">
+                    <input type="hidden" name="show_decorative" value="{% if review.show_decorative %}1{% else %}0{% endif %}">
+                    <input type="hidden" name="show_thumbnails" value="{% if review.show_thumbnails %}1{% else %}0{% endif %}">
+                    <label class="file-field">
+                      <span>画像ファイル（PNG / JPEG）</span>
+                      <input type="file" name="image_upload" accept=".png,.jpg,.jpeg,image/png,image/jpeg">
+                    </label>
+                    <div class="form-actions">
+                      <button class="secondary-button" type="submit">{% if selected.image_exists %}差し替える{% else %}画像読み込み{% endif %}</button>
+                    </div>
+                  </form>
+                {% else %}
+                  <p class="action-note">画像の保存先を確認してください。</p>
+                {% endif %}
+                <dl class="meta-list image-alt-meta-list">
+                  <div><dt>画像番号</dt><dd>{{ selected.segment_index }}</dd></div>
+                  <div><dt>サイズ</dt><dd>{{ selected.image_size_label }}</dd></div>
+                  <div><dt>指定ファイル</dt><dd>{{ selected.image_path }}</dd></div>
+                  <div><dt>AI生成対象</dt><dd>{{ selected.send_to_ai_label }}</dd></div>
+                </dl>
               </div>
-            {% endif %}
-            {% if page.result and page.result.segment_index|string == image.index|string %}
-              <div class="card-message {% if page.result.status == 'success' %}card-message--success{% else %}card-message--error{% endif %}">
-                <p>{{ page.result.message }}</p>
-              </div>
-            {% endif %}
-            {% if image.is_safe %}
-              <form class="import-form image-upload-form" method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_image', work_id=page.work_id, segment_index=image.index) }}#image-{{ image.index }}" data-busy-message="処理中です。しばらくお待ちください。">
-                <label class="file-field">
-                  <span>画像ファイル（PNG / JPEG）</span>
-                  <input type="file" name="image_upload" accept=".png,.jpg,.jpeg,image/png,image/jpeg">
+
+              <form method="post" action="{{ url_for('save_work_image_alt_review', work_id=page.work_id, segment_index=selected.segment_index, _anchor='image-alt-workspace') }}" data-busy-message="画像代替テキストを保存しています。しばらくお待ちください。" data-image-alt-edit-form>
+                <input type="hidden" name="show_decorative" value="{% if review.show_decorative %}1{% else %}0{% endif %}">
+                <input type="hidden" name="show_thumbnails" value="{% if review.show_thumbnails %}1{% else %}0{% endif %}">
+                <div class="check-row">
+                  <label><input type="checkbox" name="send_to_ai" value="1" {% if selected.send_to_ai %}checked{% endif %} {% if not selected.image_exists %}disabled{% endif %}>AI生成対象にする</label>
+                  <label><input type="checkbox" name="is_decorative" value="1" {% if selected.is_decorative %}checked{% endif %}>装飾画像とする</label>
+                </div>
+
+                <label class="form-field">
+                  <span>AI生成alt</span>
+                  <textarea rows="4" readonly>{{ selected.gemini_alt_ja }}</textarea>
                 </label>
+
+                <label class="form-field">
+                  <span>ユーザ編集alt</span>
+                  <textarea name="user_alt_ja" rows="5">{{ selected.user_alt_ja }}</textarea>
+                </label>
+                <p class="help-text">AI案と同じ内容のまま保存した場合、ユーザ編集altは空のまま保持します。</p>
+
+                <label class="form-field">
+                  <span>コメント</span>
+                  <textarea name="comment" rows="3">{{ selected.comment }}</textarea>
+                </label>
+
                 <div class="form-actions">
-                  <button class="secondary-button" type="submit">{% if image.exists %}差し替える{% else %}アップロード{% endif %}</button>
+                  <button class="button" type="button" data-image-alt-generate-one data-segment-index="{{ selected.segment_index }}">この画像だけAI生成する</button>
+                  <button class="button disabled-button" type="submit" data-image-alt-save disabled>変更を保存する</button>
+                  <button class="secondary-button cancel-button disabled-button" type="button" data-image-alt-discard disabled>保存せずに戻す</button>
                 </div>
               </form>
-            {% else %}
-              <p class="action-note">画像の保存先を確認してください。</p>
-            {% endif %}
-          </section>
-        {% endfor %}
+            </div>
+          {% else %}
+            <p class="empty">画像を選択してください。</p>
+          {% endif %}
+        </section>
       </div>
     {% endif %}
   </section>
+  <script>
+    (() => {
+      const panel = document.querySelector("[data-image-alt-start-url]");
+      if (!panel) {
+        return;
+      }
+      const state = {
+        timer: null,
+        taskId: "",
+        startedAt: 0,
+        failures: 0
+      };
+      const editForm = document.querySelector("[data-image-alt-edit-form]");
+      let savedEditState = null;
+      const pollIntervalMs = 3000;
+      const maxPollingMs = 5 * 60 * 60 * 1000;
+      const maxFailures = 5;
+      const unsavedMessage = "未保存の変更があります。保存を破棄しますか？";
+
+      function readEditFormState() {
+        if (!editForm) {
+          return null;
+        }
+        return {
+          sendToAi: Boolean(editForm.querySelector("[name='send_to_ai']")?.checked),
+          isDecorative: Boolean(editForm.querySelector("[name='is_decorative']")?.checked),
+          userAlt: editForm.querySelector("[name='user_alt_ja']")?.value || "",
+          comment: editForm.querySelector("[name='comment']")?.value || ""
+        };
+      }
+
+      function applyEditFormState(stateValue) {
+        if (!editForm || !stateValue) {
+          return;
+        }
+        const sendToAi = editForm.querySelector("[name='send_to_ai']");
+        const isDecorative = editForm.querySelector("[name='is_decorative']");
+        const userAlt = editForm.querySelector("[name='user_alt_ja']");
+        const comment = editForm.querySelector("[name='comment']");
+        if (sendToAi) sendToAi.checked = stateValue.sendToAi;
+        if (isDecorative) isDecorative.checked = stateValue.isDecorative;
+        if (userAlt) userAlt.value = stateValue.userAlt;
+        if (comment) comment.value = stateValue.comment;
+      }
+
+      function editStatesMatch(left, right) {
+        if (!left || !right) {
+          return true;
+        }
+        return left.sendToAi === right.sendToAi
+          && left.isDecorative === right.isDecorative
+          && left.userAlt === right.userAlt
+          && left.comment === right.comment;
+      }
+
+      function hasUnsavedChanges() {
+        return !editStatesMatch(savedEditState, readEditFormState());
+      }
+
+      function setEditActionButtonsEnabled(enabled) {
+        document.querySelectorAll("[data-image-alt-save], [data-image-alt-discard]").forEach((button) => {
+          button.disabled = !enabled;
+          button.classList.toggle("disabled-button", !enabled);
+        });
+      }
+
+      function updateEditActionButtons() {
+        setEditActionButtonsEnabled(hasUnsavedChanges());
+      }
+
+      function confirmDiscardIfNeeded() {
+        return !hasUnsavedChanges() || window.confirm(unsavedMessage);
+      }
+
+      function setupBulkToggle() {
+        const bulkToggle = document.querySelector("[data-image-alt-bulk-toggle]");
+        const bulkForm = document.querySelector("[data-image-alt-bulk-form]");
+        if (!bulkToggle || !bulkForm) {
+          return;
+        }
+        const originalChecked = bulkToggle.checked;
+        const originalMixed = bulkToggle.dataset.mixed === "1";
+        bulkToggle.indeterminate = originalMixed;
+        bulkToggle.addEventListener("change", (event) => {
+          if (!confirmDiscardIfNeeded()) {
+            event.currentTarget.checked = originalChecked;
+            event.currentTarget.indeterminate = originalMixed;
+            return;
+          }
+          event.currentTarget.indeterminate = false;
+          bulkForm.submit();
+        });
+      }
+
+      function syncSelectedSendToAi(segmentIndex, checked) {
+        const selectedInput = editForm?.querySelector("[name='send_to_ai']");
+        if (!selectedInput) {
+          return;
+        }
+        const selectedSegment = "{{ selected.segment_index if selected else '' }}";
+        if (String(segmentIndex) !== String(selectedSegment)) {
+          return;
+        }
+        selectedInput.checked = checked;
+        if (savedEditState) {
+          savedEditState.sendToAi = checked;
+        }
+        updateEditActionButtons();
+      }
+
+      function setupCardTargetToggles() {
+        document.querySelectorAll("[data-image-alt-card-toggle]").forEach((toggle) => {
+          toggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+          });
+          toggle.closest("label")?.addEventListener("click", (event) => {
+            event.stopPropagation();
+          });
+          toggle.addEventListener("change", async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const input = event.currentTarget;
+            const nextChecked = input.checked;
+            const previousChecked = !nextChecked;
+            const formData = new FormData();
+            formData.append("send_to_ai", nextChecked ? "1" : "0");
+            input.disabled = true;
+            try {
+              const response = await fetch(input.dataset.saveUrl || "", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Accept": "application/json" },
+                body: formData
+              });
+              const data = await response.json();
+              if (!response.ok || !data.ok) {
+                input.checked = previousChecked;
+                showProgress("error", data.message || "画像代替テキストを保存できませんでした。", null);
+                return;
+              }
+              input.checked = Boolean(data.send_to_ai);
+              syncSelectedSendToAi(input.dataset.segmentIndex || "", input.checked);
+            } catch (error) {
+              input.checked = previousChecked;
+              showProgress("error", "画像代替テキストを保存できませんでした。", null);
+            } finally {
+              input.disabled = false;
+            }
+          });
+        });
+      }
+
+      function setupAltLengthSettings() {
+        const form = document.querySelector("[data-image-alt-settings-form]");
+        const select = document.querySelector("[data-image-alt-length-target]");
+        if (!form || !select) {
+          return;
+        }
+        let savedValue = select.value;
+        select.addEventListener("change", async () => {
+          const previousValue = savedValue;
+          const formData = new FormData(form);
+          select.disabled = true;
+          try {
+            const response = await fetch(form.action || "", {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Accept": "application/json" },
+              body: formData
+            });
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+              select.value = previousValue;
+              showProgress("error", data.message || "画像alt生成設定を保存できませんでした。", null);
+              return;
+            }
+            savedValue = String(data.alt_length_target || select.value);
+            select.value = savedValue;
+          } catch (error) {
+            select.value = previousValue;
+            showProgress("error", "画像alt生成設定を保存できませんでした。", null);
+          } finally {
+            select.disabled = false;
+          }
+        });
+      }
+
+      function revealSelectedListItem() {
+        const list = document.querySelector(".image-alt-list");
+        const selectedItem = list?.querySelector(".image-alt-list-item.is-selected");
+        if (!list || !selectedItem) {
+          return;
+        }
+        const targetTop = selectedItem.offsetTop - list.offsetTop - Math.max(0, (list.clientHeight - selectedItem.offsetHeight) / 2);
+        list.scrollTop = Math.max(0, targetTop);
+      }
+
+      function discardEditChanges() {
+        applyEditFormState(savedEditState);
+        updateEditActionButtons();
+      }
+
+      function updateThumbnailState(showThumbnails) {
+        document.querySelector(".image-alt-layout")?.classList.toggle("hide-thumbnails", !showThumbnails);
+        document.querySelectorAll("input[type='hidden'][name='show_thumbnails']").forEach((input) => {
+          input.value = showThumbnails ? "1" : "0";
+        });
+        document.querySelectorAll(".image-alt-list-item[href]").forEach((link) => {
+          const url = new URL(link.href, window.location.href);
+          url.searchParams.set("show_thumbnails", showThumbnails ? "1" : "0");
+          link.href = url.toString();
+        });
+        const currentUrl = new URL(window.location.href);
+        currentUrl.searchParams.set("show_thumbnails", showThumbnails ? "1" : "0");
+        window.history.replaceState(null, "", currentUrl.toString());
+      }
+
+      function elements() {
+        return {
+          box: document.querySelector("[data-image-alt-progress-message]"),
+          text: document.querySelector("[data-image-alt-progress-text]"),
+          bar: document.querySelector("[data-image-alt-progress-bar]"),
+          details: document.querySelector("[data-image-alt-progress-details]"),
+          taskId: document.querySelector("[data-image-alt-task-id]"),
+          status: document.querySelector("[data-image-alt-status]"),
+          targetCount: document.querySelector("[data-image-alt-target-count]"),
+          skippedCount: document.querySelector("[data-image-alt-skipped-count]"),
+          cancel: document.querySelector("[data-image-alt-cancel]")
+        };
+      }
+
+      function generationButtons() {
+        return document.querySelectorAll("[data-image-alt-generate-all], [data-image-alt-generate-one]");
+      }
+
+      function setButtonsDisabled(disabled) {
+        generationButtons().forEach((button) => {
+          button.disabled = disabled;
+        });
+      }
+
+      function showProgress(kind, message, progress) {
+        const ui = elements();
+        if (!ui.box || !ui.text) {
+          return;
+        }
+        ui.box.hidden = false;
+        ui.box.classList.remove("card-message--info", "card-message--success", "card-message--error", "is-running");
+        ui.box.classList.add(kind === "success" ? "card-message--success" : kind === "error" ? "card-message--error" : "card-message--info");
+        if (kind === "info") {
+          ui.box.classList.add("is-running");
+        }
+        ui.text.textContent = message;
+        const percent = progress && typeof progress.percent === "number" ? progress.percent : 0;
+        const hideProgressBar = Boolean(progress && progress.status === "cancelled");
+        if (ui.bar) {
+          if (ui.bar.parentElement) {
+            ui.bar.parentElement.hidden = hideProgressBar;
+          }
+          ui.bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        }
+        updateDetails(progress);
+        updateCancel(progress);
+      }
+
+      function updateDetails(progress) {
+        const ui = elements();
+        if (!ui.details || !progress) {
+          return;
+        }
+        const result = progress.result || {};
+        ui.details.hidden = false;
+        if (ui.taskId) ui.taskId.textContent = progress.task_id || "";
+        if (ui.status) ui.status.textContent = progress.status || "";
+        if (ui.targetCount) ui.targetCount.textContent = result.target_count || result.total || "";
+        if (ui.skippedCount) ui.skippedCount.textContent = result.skipped_count || "";
+      }
+
+      function updateCancel(progress) {
+        const ui = elements();
+        if (!ui.cancel) {
+          return;
+        }
+        const canCancel = Boolean(progress && progress.status === "running" && progress.cancellable && state.taskId);
+        ui.cancel.disabled = !canCancel;
+        ui.cancel.classList.toggle("disabled-button", !canCancel);
+      }
+
+      function stopPolling() {
+        if (state.timer !== null) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+      }
+
+      async function pollProgress(taskId) {
+        const template = panel.dataset.imageAltProgressUrlTemplate || "";
+        const url = template.replace("__TASK_ID__", encodeURIComponent(taskId));
+        if (!url) {
+          showProgress("error", "進捗情報を確認できませんでした。", { task_id: taskId, status: "invalid_task_id" });
+          setButtonsDisabled(false);
+          return;
+        }
+        if (Date.now() - state.startedAt > maxPollingMs) {
+          showProgress("error", "進捗確認を停止しました。生成は続いている可能性があります。画面を再読み込みして状態を確認してください。", { task_id: taskId, status: "polling_timeout" });
+          setButtonsDisabled(false);
+          return;
+        }
+        try {
+          const response = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            showProgress("error", data.message || "進捗情報を確認できませんでした。", data.progress || { task_id: taskId, status: data.status || "" });
+            setButtonsDisabled(false);
+            return;
+          }
+          state.failures = 0;
+          const progress = data.progress || {};
+          if (progress.status === "completed") {
+            showProgress("success", progress.message || "画像alt生成が完了しました。", progress);
+            window.setTimeout(() => window.location.reload(), 800);
+            return;
+          }
+          if (progress.status === "cancelled") {
+            showProgress("success", progress.message || "画像alt生成をキャンセルしました。", progress);
+            setButtonsDisabled(false);
+            return;
+          }
+          if (progress.status === "failed" || progress.status === "abandoned") {
+            showProgress("error", progress.message || "画像alt生成に失敗しました。", progress);
+            setButtonsDisabled(false);
+            return;
+          }
+          showProgress("info", progress.message || "画像alt生成中", progress);
+        } catch (error) {
+          state.failures += 1;
+          if (state.failures >= maxFailures) {
+            showProgress("error", "進捗確認に失敗しました。通信状態を確認して再読み込みしてください。", { task_id: taskId, status: "polling_failed" });
+            setButtonsDisabled(false);
+            return;
+          }
+        }
+        state.timer = window.setTimeout(() => pollProgress(taskId), pollIntervalMs);
+      }
+
+      async function startGeneration(segmentIndex) {
+        stopPolling();
+        state.startedAt = Date.now();
+        state.failures = 0;
+        state.taskId = "";
+        setButtonsDisabled(true);
+        const formData = new FormData();
+        if (segmentIndex) {
+          formData.append("segment_index", segmentIndex);
+        }
+        const targetCount = segmentIndex ? 1 : Number(document.querySelector("[data-image-alt-generate-all]")?.dataset.targetCount || "0");
+        const confirmMessage = segmentIndex
+          ? "この画像だけAI生成します。画像はAIに送信されます。"
+          : `AI生成対象の画像を1画像ずつ順番に生成します。送信予定: ${targetCount}件。`;
+        if (!window.confirm(confirmMessage)) {
+          setButtonsDisabled(false);
+          return;
+        }
+        showProgress("info", "画像alt生成中", null);
+        try {
+          const response = await fetch(panel.dataset.imageAltStartUrl || "", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" },
+            body: formData
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok || !data.task_id) {
+            showProgress("error", data.message || "画像alt生成に失敗しました。", data.progress || null);
+            setButtonsDisabled(false);
+            return;
+          }
+          state.taskId = data.task_id;
+          showProgress("info", data.message || "画像alt生成中", data.progress || null);
+          await pollProgress(data.task_id);
+        } catch (error) {
+          showProgress("error", "画像alt生成に失敗しました。", null);
+          setButtonsDisabled(false);
+        }
+      }
+
+      async function cancelGeneration() {
+        if (!state.taskId) {
+          return;
+        }
+        const template = panel.dataset.imageAltCancelUrlTemplate || "";
+        const url = template.replace("__TASK_ID__", encodeURIComponent(state.taskId));
+        if (!url) {
+          return;
+        }
+        const ui = elements();
+        if (ui.cancel) {
+          ui.cancel.disabled = true;
+        }
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Accept": "application/json" }
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            showProgress("error", data.message || "画像alt生成はすでに完了しているため、キャンセルできません。", data.progress || null);
+            return;
+          }
+          showProgress("info", "キャンセル中", data.progress || { task_id: state.taskId, status: "cancelling" });
+        } catch (error) {
+          showProgress("error", "画像alt生成はすでに完了しているため、キャンセルできません。", { task_id: state.taskId, status: "not_cancellable" });
+        }
+      }
+
+      document.querySelector("[data-image-alt-generate-all]")?.addEventListener("click", () => startGeneration(""));
+      document.querySelector("[data-image-alt-generate-one]")?.addEventListener("click", (event) => {
+        startGeneration(event.currentTarget.dataset.segmentIndex || "");
+      });
+      document.querySelector("[data-image-alt-cancel]")?.addEventListener("click", cancelGeneration);
+      savedEditState = readEditFormState();
+      editForm?.querySelectorAll("input, textarea").forEach((field) => {
+        field.addEventListener("input", updateEditActionButtons);
+        field.addEventListener("change", updateEditActionButtons);
+      });
+      document.querySelector("[data-image-alt-discard]")?.addEventListener("click", discardEditChanges);
+      document.querySelector("[data-image-alt-back-link]")?.addEventListener("click", (event) => {
+        if (!confirmDiscardIfNeeded()) {
+          event.preventDefault();
+        }
+      });
+      document.querySelector(".topbar .brand")?.addEventListener("click", (event) => {
+        if (!confirmDiscardIfNeeded()) {
+          event.preventDefault();
+        }
+      });
+      document.querySelectorAll(".image-alt-list-item[href]").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          if (!confirmDiscardIfNeeded()) {
+            event.preventDefault();
+          }
+        });
+      });
+      document.querySelector("[data-image-alt-thumbnail-toggle]")?.addEventListener("change", (event) => {
+        updateThumbnailState(event.currentTarget.checked);
+      });
+      document.querySelector("[data-image-alt-decorative-toggle]")?.addEventListener("change", (event) => {
+        if (!confirmDiscardIfNeeded()) {
+          event.currentTarget.checked = !event.currentTarget.checked;
+          return;
+        }
+        event.currentTarget.form.submit();
+      });
+      setupBulkToggle();
+      setupCardTargetToggles();
+      setupAltLengthSettings();
+      revealSelectedListItem();
+      updateEditActionButtons();
+      window.addEventListener("beforeunload", stopPolling);
+    })();
+  </script>
 {% endblock %}

@@ -23,6 +23,14 @@ from pef2_engine.dictionary_review import (
 )
 from pef2_engine.dictionary_loader import load_symbol_reading_rules
 from pef2_engine.io_utils import read_json, write_json
+from pef2_engine.image_alt_review import (
+    DEFAULT_IMAGE_ALT_LENGTH_TARGET,
+    IMAGE_ALT_LENGTH_TARGET_OPTIONS,
+    image_alt_review_settings,
+    normalize_alt_length_target,
+    sync_image_alt_review,
+    save_image_alt_review,
+)
 from pef2_engine.legacy_dictionary_import import (
     LegacyDictionaryImportValidationError,
     build_dictionary_review_from_legacy_dictionary,
@@ -420,17 +428,171 @@ def load_work_images_page(
     workspace_root: Path,
     work_id: str,
     result: dict | None = None,
+    selected_segment_index: str | None = None,
+    show_decorative: bool = False,
+    show_thumbnails: bool = True,
 ) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
         return None
     meta = _read_optional_dict(work_dir / workspace_paths.WORK_META_FILENAME)
+    image_review = build_work_image_alt_review_view(
+        work_dir,
+        selected_segment_index=selected_segment_index,
+        show_decorative=show_decorative,
+        show_thumbnails=show_thumbnails,
+    )
     return {
         "work_id": work_dir.name,
         "title": _work_title(work_dir.name, meta),
         "image_summary": build_work_image_summary(work_dir),
+        "image_review": image_review,
         "result": result,
     }
+
+
+def save_work_image_alt_review_submission(
+    workspace_root: Path,
+    work_id: str,
+    segment_index: str,
+    form_data: Mapping[str, str],
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    try:
+        review = sync_image_alt_review(work_dir)
+    except Exception as error:
+        return _image_upload_result("failed", "画像代替テキストを保存できませんでした。", f"{type(error).__name__}: {error}")
+
+    target = _image_alt_item_by_index(review, segment_index)
+    if target is None:
+        return _image_upload_result("failed", "画像指定が見つかりません。", "missing_image_segment")
+
+    user_alt_ja = str(form_data.get("user_alt_ja") or "")
+    gemini_alt_ja = str(target.get("gemini_alt_ja") or "")
+    is_decorative = str(form_data.get("is_decorative") or "") == "1"
+    send_to_ai = str(form_data.get("send_to_ai") or "") == "1"
+
+    target["is_decorative"] = is_decorative
+    target["send_to_ai"] = send_to_ai and target.get("image_exists") is True
+    target["user_alt_ja"] = user_alt_ja
+    target["comment"] = str(form_data.get("comment") or "")
+    if is_decorative:
+        target["status"] = "skipped"
+    elif user_alt_ja.strip() and user_alt_ja.strip() != gemini_alt_ja.strip():
+        target["status"] = "edited"
+    elif gemini_alt_ja.strip():
+        target["status"] = "generated"
+    else:
+        target["status"] = "pending"
+
+    review["summary"] = _image_alt_summary([item for item in review.get("items") or [] if isinstance(item, dict)], review)
+    save_image_alt_review(work_dir, review)
+    return _image_upload_result(
+        "success",
+        "画像代替テキストを保存しました。",
+        "saved",
+        segment_index=str(target.get("segment_index") or ""),
+        image_file=str(target.get("image_path") or ""),
+    )
+
+
+def save_work_image_alt_targets_submission(
+    workspace_root: Path,
+    work_id: str,
+    *,
+    show_decorative: bool,
+    send_to_ai: bool,
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    try:
+        review = sync_image_alt_review(work_dir)
+    except Exception as error:
+        return _image_upload_result("failed", "画像代替テキストを保存できませんでした。", f"{type(error).__name__}: {error}")
+
+    for item in review.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if not show_decorative and item.get("is_decorative") is True:
+            continue
+        if item.get("image_exists") is not True:
+            if item.get("send_to_ai") is True:
+                item["send_to_ai"] = False
+            continue
+        if item.get("send_to_ai") is not send_to_ai:
+            item["send_to_ai"] = send_to_ai
+
+    review["summary"] = _image_alt_summary([item for item in review.get("items") or [] if isinstance(item, dict)], review)
+    save_image_alt_review(work_dir, review)
+    return _image_upload_result(
+        "success",
+        "画像代替テキストを保存しました。",
+        "saved",
+    )
+
+
+def save_work_image_alt_target_submission(
+    workspace_root: Path,
+    work_id: str,
+    segment_index: str,
+    *,
+    send_to_ai: bool,
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    try:
+        review = sync_image_alt_review(work_dir)
+    except Exception as error:
+        return _image_upload_result("failed", "画像代替テキストを保存できませんでした。", f"{type(error).__name__}: {error}")
+
+    target = _image_alt_item_by_index(review, segment_index)
+    if target is None:
+        return _image_upload_result("failed", "画像指定が見つかりません。", "missing_image_segment")
+    if target.get("image_exists") is not True and send_to_ai:
+        target["send_to_ai"] = False
+        save_image_alt_review(work_dir, review)
+        return _image_upload_result("failed", "画像ファイルがないため、AI生成対象にできません。", "missing_image_file")
+
+    target["send_to_ai"] = send_to_ai and target.get("image_exists") is True
+    review["summary"] = _image_alt_summary([item for item in review.get("items") or [] if isinstance(item, dict)], review)
+    save_image_alt_review(work_dir, review)
+    return _image_upload_result(
+        "success",
+        "画像代替テキストを保存しました。",
+        "saved",
+        segment_index=str(target.get("segment_index") or ""),
+        image_file=str(target.get("image_path") or ""),
+    )
+
+
+def save_work_image_alt_settings_submission(
+    workspace_root: Path,
+    work_id: str,
+    form_data: Mapping[str, str],
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+    try:
+        review = sync_image_alt_review(work_dir)
+    except Exception as error:
+        return _image_upload_result("failed", "画像alt生成設定を保存できませんでした。", f"{type(error).__name__}: {error}")
+
+    settings = image_alt_review_settings(review)
+    settings["alt_length_target"] = normalize_alt_length_target(form_data.get("alt_length_target"))
+    review["settings"] = settings
+    save_image_alt_review(work_dir, review)
+    result = _image_upload_result(
+        "success",
+        "画像alt生成設定を保存しました。",
+        "saved",
+    )
+    result["alt_length_target"] = settings["alt_length_target"]
+    return result
 
 
 def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: str, image_upload) -> dict | None:
@@ -508,6 +670,160 @@ def build_work_image_summary(work_dir: Path) -> dict:
         "epub_needs_regeneration": _image_epub_needs_regeneration(work_dir, items),
         "errors": errors,
     }
+
+
+def build_work_image_alt_review_view(
+    work_dir: Path,
+    *,
+    selected_segment_index: str | None = None,
+    show_decorative: bool = False,
+    show_thumbnails: bool = True,
+) -> dict:
+    try:
+        review = sync_image_alt_review(work_dir)
+    except Exception as error:
+        return {
+            "ok": False,
+            "error": f"{type(error).__name__}: {error}",
+            "items": [],
+            "visible_items": [],
+            "selected_item": None,
+            "summary": {
+                "image_count": 0,
+                "generated_count": 0,
+                "edited_count": 0,
+                "decorative_count": 0,
+                "orphaned_count": 0,
+            },
+            "settings": _image_alt_settings_view({}),
+            "show_decorative": show_decorative,
+            "show_thumbnails": show_thumbnails,
+        }
+
+    items = [_image_alt_view_item(item) for item in review.get("items") or [] if isinstance(item, dict)]
+    visible_items = [item for item in items if show_decorative or item.get("is_decorative") is not True]
+    selected_item = _selected_image_alt_item(visible_items, selected_segment_index)
+    if selected_item is None and show_decorative:
+        selected_item = _selected_image_alt_item(items, selected_segment_index)
+    summary = _image_alt_summary(items, review)
+    summary.update(_visible_image_alt_summary(visible_items))
+    return {
+        "ok": True,
+        "error": "",
+        "items": items,
+        "visible_items": visible_items,
+        "selected_item": selected_item,
+        "summary": summary,
+        "settings": _image_alt_settings_view(review),
+        "show_decorative": show_decorative,
+        "show_thumbnails": show_thumbnails,
+    }
+
+
+def _image_alt_view_item(item: dict) -> dict:
+    view = dict(item)
+    if view.get("image_exists") is not True:
+        view["send_to_ai"] = False
+    status = str(view.get("status") or "pending")
+    view["status_label"] = _image_alt_status_label(status)
+    view["display_alt_ja"] = str(view.get("user_alt_ja") or view.get("gemini_alt_ja") or "")
+    width = view.get("image_width")
+    height = view.get("image_height")
+    view["image_size_label"] = f"{width} x {height}px" if width and height else "未確認"
+    view["send_to_ai_label"] = "AI生成対象" if view.get("send_to_ai") is not False else "対象外"
+    view["status_class"] = _image_alt_status_class(status)
+    return view
+
+
+def _image_alt_settings_view(review: dict) -> dict:
+    settings = image_alt_review_settings(review)
+    current = normalize_alt_length_target(settings.get("alt_length_target"))
+    return {
+        "alt_length_target": current,
+        "alt_length_target_label": _image_alt_length_target_label(current),
+        "alt_length_target_options": [
+            {
+                "value": value,
+                "label": _image_alt_length_target_label(value),
+                "selected": value == current,
+            }
+            for value in IMAGE_ALT_LENGTH_TARGET_OPTIONS
+        ],
+    }
+
+
+def _image_alt_length_target_label(value: int) -> str:
+    labels = {
+        50: "短め（50字）",
+        DEFAULT_IMAGE_ALT_LENGTH_TARGET: f"標準（{DEFAULT_IMAGE_ALT_LENGTH_TARGET}字）",
+        300: "詳しめ（300字）",
+    }
+    return labels.get(value, f"{value}字")
+
+
+def _selected_image_alt_item(items: list[dict], selected_segment_index: str | None) -> dict | None:
+    if selected_segment_index:
+        target = str(selected_segment_index)
+        for item in items:
+            if str(item.get("segment_index") or "") == target:
+                return item
+    return items[0] if items else None
+
+
+def _image_alt_summary(items: list[dict], review: dict) -> dict:
+    return {
+        "image_count": len(items),
+        "generated_count": sum(1 for item in items if str(item.get("status") or "") == "generated"),
+        "edited_count": sum(1 for item in items if str(item.get("status") or "") == "edited"),
+        "decorative_count": sum(1 for item in items if item.get("is_decorative") is True),
+        "generation_target_count": sum(
+            1
+            for item in items
+            if item.get("send_to_ai") is True
+            and item.get("image_exists") is True
+            and not str(item.get("gemini_alt_ja") or "").strip()
+        ),
+        "orphaned_count": len(review.get("orphaned_items") or []),
+    }
+
+
+def _visible_image_alt_summary(items: list[dict]) -> dict:
+    eligible_items = [item for item in items if item.get("image_exists") is True]
+    enabled_count = sum(1 for item in eligible_items if item.get("send_to_ai") is True)
+    return {
+        "visible_generation_eligible_count": len(eligible_items),
+        "visible_send_to_ai_count": enabled_count,
+        "visible_send_to_ai_all": bool(eligible_items) and enabled_count == len(eligible_items),
+        "visible_send_to_ai_mixed": 0 < enabled_count < len(eligible_items),
+    }
+
+
+def _image_alt_status_label(status: str) -> str:
+    return {
+        "pending": "未生成",
+        "generated": "生成済み",
+        "edited": "編集済み",
+        "skipped": "装飾画像",
+        "error": "エラー",
+    }.get(status, "未生成")
+
+
+def _image_alt_status_class(status: str) -> str:
+    if status in {"generated", "edited"}:
+        return "status-done"
+    if status == "skipped":
+        return "status-pending"
+    if status == "error":
+        return "status-error"
+    return "status-current"
+
+
+def _image_alt_item_by_index(review: dict, segment_index: str) -> dict | None:
+    target_index = str(segment_index)
+    for item in review.get("items") or []:
+        if str(item.get("segment_index") or "") == target_index:
+            return item
+    return None
 
 
 def select_image_processed_file(work_dir: Path) -> dict:

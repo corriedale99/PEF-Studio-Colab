@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ review.title }} - 辞書編集 - PEFスタジオ{% endblock %}
 {% block content %}
-  <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">← 作品詳細へ戻る</a>
+  <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}" data-dictionary-review-leave-link>← 作品詳細へ戻る</a>
 
   <section class="panel work-header">
     <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--dictionary" aria-hidden="true"></span>辞書編集</h1>
@@ -134,7 +134,7 @@
         <button class="primary-button" type="submit">保存する</button>
         <a class="button" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">保存しない</a>
         {% if review.back_to_detail_ready %}
-          <a class="button" href="{{ url_for('reading_edit', work_id=review.work_id) }}">読みと息継ぎ編集へ進む</a>
+          <a class="button" href="{{ url_for('reading_edit', work_id=review.work_id) }}" data-dictionary-review-leave-link>読みと息継ぎ編集へ進む</a>
         {% endif %}
       </div>
       <p class="form-help">保存すると編集用データを自動作成します。</p>
@@ -154,6 +154,33 @@
           event.preventDefault();
         }
       });
+    });
+
+    const dictionaryUnsavedMessage = "未保存の変更があります。保存を破棄しますか？";
+    const dictionaryReviewFields = Array.from(document.querySelectorAll(".dictionary-review-form textarea, .dictionary-review-form input")).filter((field) => field.type !== "hidden");
+    const initialDictionaryReviewValues = dictionaryReviewFields.map((field) => ({
+      field,
+      checked: field.checked,
+      value: field.value
+    }));
+
+    function hasUnsavedDictionaryReviewChanges() {
+      return initialDictionaryReviewValues.some((item) => {
+        if (item.field.type === "radio" || item.field.type === "checkbox") {
+          return item.field.checked !== item.checked;
+        }
+        return item.field.value !== item.value;
+      });
+    }
+
+    function confirmDictionaryReviewLeave(event) {
+      if (hasUnsavedDictionaryReviewChanges() && !window.confirm(dictionaryUnsavedMessage)) {
+        event.preventDefault();
+      }
+    }
+
+    document.querySelectorAll("[data-dictionary-review-leave-link], .topbar .brand").forEach((link) => {
+      link.addEventListener("click", confirmDictionaryReviewLeave);
     });
   </script>
 {% endblock %}
