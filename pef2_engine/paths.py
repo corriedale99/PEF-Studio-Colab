@@ -108,11 +108,19 @@ def resolve_named_file(directory: Path, filename: str) -> Path:
     if exact.exists():
         return exact
 
+    candidates = resolve_named_file_candidates(directory, filename)
+    if candidates:
+        return candidates[0]
+    return exact
+
+
+def resolve_named_file_candidates(directory: Path, filename: str) -> list[Path]:
     target_nfc = unicodedata.normalize("NFC", filename)
     target_nfd = unicodedata.normalize("NFD", filename)
+    candidates: list[Path] = []
     for path in directory.iterdir() if directory.exists() else []:
         name_nfc = unicodedata.normalize("NFC", path.name)
         name_nfd = unicodedata.normalize("NFD", path.name)
         if name_nfc == target_nfc or name_nfd == target_nfd:
-            return path
-    return exact
+            candidates.append(path)
+    return candidates

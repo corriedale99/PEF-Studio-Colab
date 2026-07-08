@@ -36,6 +36,7 @@ from pef2_engine.legacy_dictionary_import import (
     build_dictionary_review_from_legacy_dictionary,
     load_legacy_dictionary_json_bytes,
 )
+from pef2_engine.paths import resolve_named_file
 from pef2_engine.pre_processed_parser import parse_source_file_to_pre_processed
 from pef2_engine.processed_builder import run_processed_workspace_full
 from pef2_engine.processed_editing import (
@@ -3505,7 +3506,7 @@ def _ensure_default_workspace_dictionaries(workspace_root: Path) -> None:
         user_dir / "★ユーザ辞書.json": [],
     }
     for path, data in default_files.items():
-        if not path.exists():
+        if not resolve_named_file(path.parent, path.name).exists():
             write_json(path, data)
 
 

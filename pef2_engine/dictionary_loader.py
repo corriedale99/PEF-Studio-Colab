@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from pef2_engine.io_utils import read_json
+from pef2_engine.paths import resolve_named_file_candidates
 from version import VERSION
 
 
@@ -76,11 +77,8 @@ def load_breath_rules(breath_rules_path: Path) -> dict:
 
 
 def load_symbol_reading_rules(workspace_root: Path) -> tuple[dict, dict, list[str]]:
-    rules_path = (
-        Path(workspace_root)
-        / "dictionaries"
-        / "system"
-        / SYMBOL_READING_RULES_FILENAME
+    rules_path = _resolve_symbol_reading_rules_path(
+        Path(workspace_root) / "dictionaries" / "system"
     )
     warnings: list[str] = []
     if not rules_path.exists():
@@ -148,6 +146,24 @@ def load_symbol_reading_rules(workspace_root: Path) -> tuple[dict, dict, list[st
         rules_by_category[category] = rules
 
     return rules_by_category, symbol_to_category, warnings
+
+
+def _resolve_symbol_reading_rules_path(system_dir: Path) -> Path:
+    candidates = resolve_named_file_candidates(system_dir, SYMBOL_READING_RULES_FILENAME)
+    fallback_path = system_dir / SYMBOL_READING_RULES_FILENAME
+    if not candidates:
+        return fallback_path
+    if len(candidates) == 1:
+        return candidates[0]
+
+    for path in candidates:
+        try:
+            data = read_json(path)
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("sentence_end_pause"):
+            return path
+    return candidates[0]
 
 
 def find_dictionary_matches(text: str, entries: list[dict]) -> list[dict]:

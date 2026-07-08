@@ -9,6 +9,7 @@ from typing import Any
 
 from pef2_engine import workspace_paths
 from pef2_engine.io_utils import read_json
+from pef2_engine.paths import resolve_named_file_candidates
 
 SCHEMA_VERSION = "tts-pre-transform-1"
 REPORT_SCHEMA_VERSION = "tts-precheck-report-1"
@@ -44,7 +45,9 @@ def run_tts_pre_transform(work_dir: Path, workspace_root: Path | None = None) ->
     )
     result = _new_result(work_dir.name)
     source_path = workspace_paths.processed_final_path(work_dir)
-    rules_path = workspace_root / "dictionaries" / "system" / SYMBOL_RULES_FILENAME
+    rules_path = _resolve_symbol_rules_path(
+        workspace_root / "dictionaries" / "system"
+    )
 
     processed = _read_required_json(
         source_path,
@@ -101,6 +104,24 @@ def transform_processed_to_tts_units(
     result["tts_units"] = tts_units
     _finish_result(result)
     return result
+
+
+def _resolve_symbol_rules_path(system_dir: Path) -> Path:
+    candidates = resolve_named_file_candidates(system_dir, SYMBOL_RULES_FILENAME)
+    fallback_path = system_dir / SYMBOL_RULES_FILENAME
+    if not candidates:
+        return fallback_path
+    if len(candidates) == 1:
+        return candidates[0]
+
+    for path in candidates:
+        try:
+            data = read_json(path)
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("sentence_end_pause"):
+            return path
+    return candidates[0]
 
 
 def normalize_symbol_rules(data: object) -> dict:
