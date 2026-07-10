@@ -1,3 +1,3 @@
 # version.py
-DESCRIPTION = "v1.6-7sub2-マニュアル向け仕様変更-NFC"
-VERSION = "v1.6-7sub2"
+DESCRIPTION = "v1.6-7sub3-画像一括読み込み"
+VERSION = "v1.6-7sub3"

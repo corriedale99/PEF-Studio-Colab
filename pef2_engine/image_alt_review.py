@@ -221,9 +221,15 @@ def _match_previous(
 
 
 def _copy_review_values(target: dict[str, Any], source: dict[str, Any]) -> None:
+    apply_auto_decorative = _should_apply_auto_decorative(target, source)
     for key in ALT_REVIEW_KEYS:
         if key in source:
             target[key] = deepcopy(source[key])
+    if apply_auto_decorative:
+        target["is_decorative"] = True
+        target["send_to_ai"] = False
+        target["decorative_reason"] = AUTO_DECORATIVE_REASON
+        target["status"] = "skipped"
     if target.get("image_exists") is True and str(target.get("error_message") or "") == "画像ファイルが見つかりません。":
         target["error_message"] = ""
     if target.get("image_exists") is False and not str(target.get("error_message") or "").strip():
@@ -231,6 +237,29 @@ def _copy_review_values(target: dict[str, Any], source: dict[str, Any]) -> None:
     if target.get("is_decorative") is True:
         target.setdefault("decorative_reason", AUTO_DECORATIVE_REASON)
         target.setdefault("send_to_ai", False)
+
+
+def _should_apply_auto_decorative(target: dict[str, Any], source: dict[str, Any]) -> bool:
+    if target.get("is_decorative") is not True:
+        return False
+    if source.get("is_decorative") is True:
+        return False
+    if str(source.get("decorative_reason") or "").strip():
+        return False
+    if source.get("send_to_ai") is not True or str(source.get("status") or "pending") != "pending":
+        return False
+    return not any(
+        str(source.get(key) or "").strip()
+        for key in (
+            "gemini_alt_ja",
+            "gemini_alt_en",
+            "user_alt_ja",
+            "user_alt_en",
+            "comment",
+            "generated_at",
+            "updated_at",
+        )
+    )
 
 
 def _orphaned_items(previous_items: list[dict[str, Any]], matched_ids: set[int]) -> list[dict[str, Any]]:

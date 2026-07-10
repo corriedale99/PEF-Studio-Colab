@@ -136,6 +136,13 @@ def resolve_image_upload_target(images_dir: Path, image_file: str) -> Path:
     return target
 
 
+def prepare_images_directory(images_dir: Path) -> Path:
+    directory = _safe_images_directory(images_dir, create=True)
+    if directory is None:
+        raise InvalidImagePathError("images directory could not be created")
+    return directory
+
+
 def _safe_images_directory(images_dir: Path, *, create: bool) -> Path | None:
     directory = Path(images_dir)
     if directory.name != "images":

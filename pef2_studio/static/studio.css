@@ -91,7 +91,9 @@ body {
 #dictionary-card,
 #reading-edit-card,
 #image-card,
-#voice-settings {
+#voice-settings,
+#image-bulk-upload,
+#image-alt-workspace {
   scroll-margin-top: 132px;
 }
 

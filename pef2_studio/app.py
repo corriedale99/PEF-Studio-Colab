@@ -55,6 +55,7 @@ from pef2_studio.workspace_view import (
     save_work_image_alt_target_submission,
     save_work_image_alt_targets_submission,
     save_work_image_alt_review_submission,
+    save_work_bulk_image_uploads,
     save_work_image_upload,
     save_work_tts_settings_submission,
     save_workspace_tts_settings_submission,
@@ -462,6 +463,59 @@ def create_app(workspace_root: Path | None = None):
                 page=page,
             ),
             200 if result.get("status") == "success" else 400,
+        )
+
+    @app.post("/works/<work_id>/images/bulk-upload")
+    def upload_work_images_bulk(work_id: str):
+        show_decorative = request.form.get("show_decorative") == "1"
+        show_thumbnails = request.form.get("show_thumbnails", "1") == "1"
+        selected_segment_index = request.form.get("selected")
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            page = load_work_images_page(
+                resolved_workspace_root,
+                work_id,
+                result=lock_result,
+                selected_segment_index=selected_segment_index,
+                show_decorative=show_decorative,
+                show_thumbnails=show_thumbnails,
+            )
+            if page is None:
+                abort(404)
+            return (
+                render_template(
+                    "work_images.html",
+                    workspace_root=resolved_workspace_root,
+                    page=page,
+                ),
+                _lock_status_code(lock_result),
+            )
+
+        result = save_work_bulk_image_uploads(
+            resolved_workspace_root,
+            work_id,
+            request.files.getlist("image_uploads"),
+            overwrite_existing=request.form.get("overwrite_existing") == "1",
+        )
+        if result is None:
+            abort(404)
+        page = load_work_images_page(
+            resolved_workspace_root,
+            work_id,
+            result=result,
+            selected_segment_index=selected_segment_index,
+            show_decorative=show_decorative,
+            show_thumbnails=show_thumbnails,
+        )
+        if page is None:
+            abort(404)
+        return (
+            render_template(
+                "work_images.html",
+                workspace_root=resolved_workspace_root,
+                page=page,
+            ),
+            400 if result.get("status") == "failed" else 200,
         )
 
     @app.post("/works/<work_id>/images/<segment_index>/alt")

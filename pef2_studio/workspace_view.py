@@ -32,9 +32,13 @@ from pef2_engine.image_alt_review import (
     save_image_alt_review,
 )
 from pef2_engine.image_paths import (
+    AmbiguousImagePathError,
     ImagePathError,
+    UnsupportedImageExtensionError,
     image_filename,
+    normalize_image_reference,
     normalize_nfc,
+    prepare_images_directory,
     resolve_existing_image,
     resolve_image_upload_target,
 )
@@ -116,9 +120,18 @@ DEFAULT_WORKS_SORT = "updated_desc"
 RESERVED_WORK_DIR_NAMES = {"_trash", "backups"}
 ALLOWED_IMAGE_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+BULK_IMAGE_UPLOAD_MAX_FILES = 50
+BULK_IMAGE_UPLOAD_MAX_TOTAL_BYTES = IMAGE_UPLOAD_MAX_BYTES * 10
+IMAGE_UPLOAD_CHUNK_BYTES = 1024 * 1024
 IMAGE_UPLOAD_SUCCESS_MESSAGE = "画像を保存しました。変更をEPUBに反映するには、EPUB生成をやり直してください。"
 IMAGE_UPLOAD_FORMAT_ERROR_MESSAGE = "PNGまたはJPEG画像を選んでください。"
 IMAGE_UPLOAD_SIZE_ERROR_MESSAGE = "画像ファイルが大きすぎます。10MB以下の画像を選んでください。"
+
+
+class _BulkUploadTotalLimitExceeded(Exception):
+    pass
+
+
 DICTIONARY_RESET_BACKUP_FILENAMES = (
     workspace_paths.LEGACY_DICTIONARY_FILENAME,
     workspace_paths.DICTIONARY_REVIEW_FILENAME,
@@ -658,6 +671,166 @@ def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: st
         segment_index=str(item.get("index") or ""),
         image_file=str(item.get("image_file") or ""),
     )
+
+
+def save_work_bulk_image_uploads(
+    workspace_root: Path,
+    work_id: str,
+    image_uploads: list[Any],
+    *,
+    overwrite_existing: bool,
+    max_files: int = BULK_IMAGE_UPLOAD_MAX_FILES,
+    max_total_bytes: int = BULK_IMAGE_UPLOAD_MAX_TOTAL_BYTES,
+    max_file_bytes: int = IMAGE_UPLOAD_MAX_BYTES,
+) -> dict | None:
+    work_dir = resolve_work_dir(workspace_root, work_id)
+    if work_dir is None:
+        return None
+
+    uploads = [upload for upload in image_uploads if str(getattr(upload, "filename", "") or "").strip()]
+    if not uploads:
+        return _bulk_image_upload_limit_result("画像ファイルを選択してください。")
+    if len(uploads) > max_files:
+        return _bulk_image_upload_limit_result(
+            f"一度に選択できる画像ファイルは{max_files}件までです。"
+        )
+
+    images_dir = work_dir / "images"
+    try:
+        safe_images_dir = prepare_images_directory(images_dir)
+    except ImagePathError:
+        return _bulk_image_upload_limit_result("画像の保存先を確認してください。")
+
+    stage_dir = Path(tempfile.mkdtemp(prefix=".bulk_upload_", dir=safe_images_dir))
+    staged: list[dict[str, Any]] = []
+    total_bytes = 0
+    try:
+        for position, upload in enumerate(uploads):
+            original_name = str(getattr(upload, "filename", "") or "").strip()
+            stage_path = stage_dir / f"{position:04d}.tmp"
+            record = {
+                "original_name": original_name,
+                "stage_path": stage_path,
+                "size": 0,
+                "stage_error": "",
+                "normalized_filename": "",
+                "duplicate": False,
+            }
+            try:
+                size, total_bytes, _ = _copy_upload_stream(
+                    upload,
+                    stage_path,
+                    total_start=total_bytes,
+                    max_total_bytes=max_total_bytes,
+                )
+                record["size"] = size
+            except _BulkUploadTotalLimitExceeded:
+                return _bulk_image_upload_limit_result(
+                    f"一度に読み込める画像ファイルの合計容量は{max_total_bytes // (1024 * 1024)}MBまでです。"
+                )
+            except Exception:
+                record["stage_error"] = "一時ファイルへ保存できませんでした。"
+            staged.append(record)
+
+        result = _new_bulk_image_upload_result()
+        expected_images = _bulk_expected_images(work_dir)
+        records_by_name: dict[str, list[dict[str, Any]]] = {}
+        for record in staged:
+            if record["stage_error"]:
+                _append_bulk_result(result, "errors", record["original_name"], record["stage_error"])
+                continue
+            try:
+                normalized_filename = _normalize_bulk_upload_filename(record["original_name"])
+            except UnsupportedImageExtensionError:
+                _append_bulk_result(result, "errors", record["original_name"], "対応していない画像形式です。")
+                continue
+            except ImagePathError:
+                _append_bulk_result(result, "errors", record["original_name"], "ファイル名を確認してください。")
+                continue
+            record["normalized_filename"] = normalized_filename
+            records_by_name.setdefault(normalized_filename, []).append(record)
+
+        for records in records_by_name.values():
+            if len(records) < 2:
+                continue
+            for record in records:
+                record["duplicate"] = True
+                _append_bulk_result(
+                    result,
+                    "errors",
+                    record["original_name"],
+                    "同じ名前のファイルが複数選択されています。",
+                )
+
+        target_errors: set[str] = set()
+        for record in staged:
+            filename = record["original_name"]
+            normalized_filename = record["normalized_filename"]
+            if record["stage_error"] or not normalized_filename or record["duplicate"]:
+                continue
+            if int(record["size"] or 0) > max_file_bytes:
+                _append_bulk_result(result, "errors", filename, "画像ファイルが10MBを超えています。")
+                continue
+            if not _looks_like_allowed_image(record["stage_path"]):
+                _append_bulk_result(result, "errors", filename, "PNGまたはJPEG画像ではありません。")
+                continue
+
+            target = expected_images.get(normalized_filename)
+            if target is None:
+                _append_bulk_result(result, "unused", filename)
+                continue
+
+            try:
+                existing = resolve_existing_image(safe_images_dir, target["image_file"])
+            except AmbiguousImagePathError:
+                _append_bulk_result(result, "errors", filename, "同じ名前の既存画像が複数あります。")
+                target_errors.add(normalized_filename)
+                continue
+            except ImagePathError:
+                _append_bulk_result(result, "errors", filename, "画像の保存先を確認してください。")
+                target_errors.add(normalized_filename)
+                continue
+
+            if existing is not None and not overwrite_existing:
+                _append_bulk_result(result, "skipped", filename)
+                continue
+
+            try:
+                target_path = resolve_image_upload_target(safe_images_dir, target["image_file"])
+                os.replace(record["stage_path"], target_path)
+            except AmbiguousImagePathError:
+                _append_bulk_result(result, "errors", filename, "同じ名前の既存画像が複数あります。")
+                target_errors.add(normalized_filename)
+                continue
+            except (ImagePathError, OSError):
+                _append_bulk_result(result, "errors", filename, "画像を保存できませんでした。")
+                target_errors.add(normalized_filename)
+                continue
+
+            _append_bulk_result(result, "overwritten" if existing is not None else "new", filename)
+
+        for normalized_filename, target in expected_images.items():
+            try:
+                existing = resolve_existing_image(safe_images_dir, target["image_file"])
+            except AmbiguousImagePathError:
+                if normalized_filename not in target_errors:
+                    _append_bulk_result(
+                        result,
+                        "errors",
+                        target["filename"],
+                        "同じ名前の既存画像が複数あります。",
+                    )
+                continue
+            except ImagePathError:
+                if normalized_filename not in target_errors:
+                    _append_bulk_result(result, "errors", target["filename"], "画像の保存先を確認してください。")
+                continue
+            if existing is None:
+                _append_bulk_result(result, "missing", target["filename"])
+
+        return _finish_bulk_image_upload_result(result)
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 def build_work_image_summary(work_dir: Path) -> dict:
@@ -2653,6 +2826,104 @@ def _image_item_by_index(work_dir: Path, segment_index: str) -> dict | None:
         if str(item.get("index") or "") == target_index:
             return item
     return None
+
+
+def _copy_upload_stream(
+    image_upload,
+    target_path: Path,
+    *,
+    total_start: int = 0,
+    max_total_bytes: int | None = None,
+    stop_after_bytes: int | None = None,
+) -> tuple[int, int, bool]:
+    size = 0
+    total = total_start
+    too_large = False
+    with target_path.open("wb") as target:
+        while True:
+            chunk = image_upload.stream.read(IMAGE_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            total += len(chunk)
+            if max_total_bytes is not None and total > max_total_bytes:
+                raise _BulkUploadTotalLimitExceeded
+            if stop_after_bytes is not None and size > stop_after_bytes:
+                too_large = True
+                break
+            target.write(chunk)
+    return size, total, too_large
+
+
+def _normalize_bulk_upload_filename(upload_name: str) -> str:
+    raw = str(upload_name or "").strip()
+    if not raw or "/" in raw or "\\" in raw or Path(raw).name != raw:
+        raise ImagePathError("bulk upload filename must be a basename")
+    return normalize_image_reference(raw).removeprefix("images/")
+
+
+def _bulk_expected_images(work_dir: Path) -> dict[str, dict[str, Any]]:
+    expected: dict[str, dict[str, Any]] = {}
+    for item in build_work_image_summary(work_dir).get("items") or []:
+        image_file = str(item.get("image_file") or "")
+        try:
+            normalized_reference = normalize_image_reference(image_file)
+        except ImagePathError:
+            continue
+        filename = normalized_reference.removeprefix("images/")
+        expected.setdefault(
+            filename,
+            {
+                "filename": filename,
+                "image_file": normalized_reference,
+            },
+        )
+    return expected
+
+
+def _new_bulk_image_upload_result() -> dict:
+    return {
+        "status": "success",
+        "bulk": True,
+        "message": "画像ファイルを一括で読み込みました。",
+        "summary": {},
+        "details": {
+            "new": [],
+            "overwritten": [],
+            "skipped": [],
+            "unused": [],
+            "errors": [],
+            "missing": [],
+        },
+    }
+
+
+def _append_bulk_result(result: dict, category: str, filename: str, message: str = "") -> None:
+    result["details"][category].append(
+        {
+            "filename": filename or "ファイル名なし",
+            "message": message,
+        }
+    )
+
+
+def _finish_bulk_image_upload_result(result: dict) -> dict:
+    details = result["details"]
+    result["summary"] = {key: len(value) for key, value in details.items()}
+    has_non_error_result = any(details[key] for key in ("new", "overwritten", "skipped", "unused"))
+    if details["errors"]:
+        result["status"] = "partial" if has_non_error_result else "failed"
+    elif details["missing"]:
+        result["status"] = "partial"
+    return result
+
+
+def _bulk_image_upload_limit_result(message: str) -> dict:
+    result = _new_bulk_image_upload_result()
+    result["status"] = "failed"
+    result["message"] = "画像ファイルを一括で読み込めませんでした。"
+    _append_bulk_result(result, "errors", "一括取り込み", message)
+    return _finish_bulk_image_upload_result(result)
 
 
 def _looks_like_allowed_image(path: Path) -> bool:

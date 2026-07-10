@@ -22,9 +22,61 @@
     <p class="edit-help">・AI生成対象にした画像は、alt生成時にAIへ送信されます。個人情報が含まれる画像は対象外にしてください。</p>
   </section>
 
-  {% if page.result %}
+  {% if page.result and (not page.result.bulk or not (review.ok and review.items)) %}
     <section class="panel {% if page.result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
       <p>{{ page.result.message }}</p>
+    </section>
+  {% endif %}
+
+  {% if review.ok and review.items %}
+    <section id="image-bulk-upload" class="panel">
+      <h2>画像をまとめて読み込む</h2>
+      <p class="form-help">原稿内で指定されている画像を、複数まとめて読み込みます。原稿にない画像は保存されません。</p>
+      <form class="import-form" method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_images_bulk', work_id=page.work_id, _anchor='image-bulk-upload') }}" data-busy-message="画像を保存しています。しばらくお待ちください。">
+        {% if selected %}<input type="hidden" name="selected" value="{{ selected.segment_index }}">{% endif %}
+        <input type="hidden" name="show_decorative" value="{% if review.show_decorative %}1{% else %}0{% endif %}">
+        <input type="hidden" name="show_thumbnails" value="{% if review.show_thumbnails %}1{% else %}0{% endif %}">
+        <label class="file-field">
+          <span>画像ファイルを選択</span>
+          <input type="file" name="image_uploads" accept=".png,.jpg,.jpeg,image/png,image/jpeg" multiple>
+        </label>
+        <label class="switch-label">
+          <input type="checkbox" name="overwrite_existing" value="1">
+          既存画像を上書きする
+        </label>
+        <div class="form-actions">
+          <button class="secondary-button" type="submit">画像をまとめて読み込む</button>
+        </div>
+      </form>
+      {% if page.result and page.result.bulk %}
+        <div class="card-message {% if page.result.status == 'success' %}card-message--success{% else %}card-message--warning{% endif %}">
+          <p>{{ page.result.message }}</p>
+          <p class="form-help">
+            新規 {{ page.result.summary["new"] }}件／上書き {{ page.result.summary.overwritten }}件／スキップ {{ page.result.summary.skipped }}件／未使用 {{ page.result.summary.unused }}件／エラー {{ page.result.summary.errors }}件
+          </p>
+          {% if page.result.summary.missing %}<p class="form-help">未読み込み {{ page.result.summary.missing }}件</p>{% endif %}
+          {% set bulk_result_groups = [
+            ("new", "新規保存"),
+            ("overwritten", "上書き"),
+            ("skipped", "スキップ"),
+            ("unused", "未使用"),
+            ("errors", "エラー"),
+            ("missing", "未読み込み")
+          ] %}
+          {% for key, label in bulk_result_groups %}
+            {% if page.result.details[key] %}
+              <details>
+                <summary>{{ label }}（{{ page.result.details[key]|length }}件）</summary>
+                <ul class="result-list">
+                  {% for item in page.result.details[key] %}
+                    <li>{{ item.filename }}{% if item.message %}：{{ item.message }}{% endif %}</li>
+                  {% endfor %}
+                </ul>
+              </details>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
     </section>
   {% endif %}
 
