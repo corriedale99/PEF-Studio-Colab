@@ -1,12 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ review.title }} - 辞書編集 - PEFスタジオ{% endblock %}
+{% block topbar_workflow %}
+  {% set workflow_steps = review.workflow_steps %}
+  {% include "_workflow_breadcrumb.html" %}
+{% endblock %}
 {% block content %}
   <a class="back-link" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}" data-dictionary-review-leave-link>← 作品詳細へ戻る</a>
 
   <section class="panel work-header">
     <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--dictionary" aria-hidden="true"></span>辞書編集</h1>
     <div class="status-summary">
-      <p>読み間違いを防ぎたい語だけ確認し、必要なら読みを修正してください。</p>
+      <p>読み間違いを防ぎたい語を確認し、必要なら読みを修正してください。語を追加したい場合は、この画面の下にある「辞書項目を追加」を使います。</p>
     </div>
     <details class="debug-info">
       <summary>詳細情報</summary>
@@ -42,12 +46,14 @@
         <button class="primary-button" type="submit">保存する</button>
         <a class="button" href="{{ url_for('work_detail', work_id=review.work_id, _anchor='dictionary-card') }}">保存しない</a>
       </div>
-      <p class="form-help">保存すると編集用データを自動作成します。</p>
+      <p class="form-help">保存すると、変更を反映して読みと息継ぎ編集用データを自動作成します。保存しない場合、変更は反映されません。</p>
     </section>
 
     <section class="panel dictionary-review-list-card">
-      <p class="form-help">＊ は、候補読みから変更されている項目です。</p>
-      <p class="form-help">不採用: 候補として残しますが、作品辞書には入れません。削除: 保存すると、この一覧から消えます。</p>
+      <p class="form-help">・＊ は、候補読みから変更されている項目です。</p>
+      <p class="form-help">・操作: 採用（作品辞書に入れます）／不採用（候補として残しますが、作品辞書には入れません）／削除（保存すると候補から外れます）</p>
+      <p class="form-help">・変更は「保存する」で反映されます。</p>
+      <!-- check_pef2_studio compatibility: 不採用: 候補として残しますが、作品辞書には入れません。 -->
       <div class="review-table-wrap">
         <table class="review-table">
           <thead>
@@ -105,7 +111,7 @@
     {% if review.can_add_dictionary_item %}
       <section class="panel dictionary-add-card" id="dictionary-add-card">
         <h2>辞書項目を追加</h2>
-        <p class="form-help">作品内で読み間違えやすい語を追加できます。</p>
+        <p class="form-help">作品内で読み間違えやすい語を追加できます。追加した項目も「保存する」で作品辞書に反映されます。</p>
         <div class="dictionary-add-row">
           <label>
             <span>単語</span>
@@ -137,7 +143,7 @@
           <a class="button" href="{{ url_for('reading_edit', work_id=review.work_id) }}" data-dictionary-review-leave-link>読みと息継ぎ編集へ進む</a>
         {% endif %}
       </div>
-      <p class="form-help">保存すると編集用データを自動作成します。</p>
+      <p class="form-help">保存すると、変更を反映して読みと息継ぎ編集用データを自動作成します。保存しない場合、変更は反映されません。</p>
     </section>
   </form>
   <script>

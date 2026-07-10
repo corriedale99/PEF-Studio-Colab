@@ -9,6 +9,7 @@ from pef2_engine.epub_builder import EPUB_BUILD_REPORT_FILENAME, generate_epub_f
 from pef2_engine.gemini_dictionary_review import AIDictionaryReviewCancelled
 from pef2_engine.generation_lock import acquire_generation_lock, release_generation_lock
 from pef2_engine.image_alt_generator import ImageAltGenerationCancelled, run_image_alt_generation
+from pef2_engine.image_paths import ImagePathError, image_filename, resolve_existing_image
 from pef2_engine.io_utils import read_json, write_json
 from pef2_engine.tts_generator import (
     AUDIO_FILENAME,
@@ -1348,9 +1349,15 @@ def _missing_images(work_dir: Path, processed: Any) -> list[dict]:
         if not (segment.get("is_image") or segment.get("block_type") == "image"):
             continue
         image_file = str(segment.get("image_file") or "").strip()
-        filename = _image_filename(image_file)
-        searched_path = images_dir / filename if filename else images_dir
-        if not filename or not searched_path.is_file():
+        try:
+            filename = image_filename(image_file)
+            resolved = resolve_existing_image(images_dir, image_file)
+            searched_path = resolved.path if resolved is not None else images_dir / filename
+        except ImagePathError:
+            filename = ""
+            resolved = None
+            searched_path = images_dir
+        if not filename or resolved is None:
             missing.append(
                 {
                     "index": segment.get("index", ""),
@@ -1359,16 +1366,6 @@ def _missing_images(work_dir: Path, processed: Any) -> list[dict]:
                 }
             )
     return missing
-
-
-def _image_filename(image_file: str) -> str:
-    raw = image_file.replace("\\", "/")
-    parts = [part for part in raw.split("/") if part]
-    if parts and parts[0] == "images":
-        parts = parts[1:]
-    if len(parts) != 1 or parts[0] in {".", ".."} or ".." in parts[0]:
-        return ""
-    return parts[0]
 
 
 def _preflight_result(

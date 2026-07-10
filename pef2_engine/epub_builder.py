@@ -12,6 +12,13 @@ from typing import Any
 
 from pef2_engine import workspace_paths
 from pef2_engine.image_alt_review import image_dimensions
+from pef2_engine.image_paths import (
+    AmbiguousImagePathError,
+    ImagePathError,
+    image_filename,
+    resolve_existing_image,
+    validate_image_reference,
+)
 from pef2_engine.io_utils import read_json, write_json
 
 
@@ -448,8 +455,10 @@ def _resolve_image(
     *,
     allow_missing_images: bool,
 ) -> dict | None:
-    raw = image_file.strip().replace("\\", "/")
-    if raw.startswith("/"):
+    try:
+        validated_image_file = validate_image_reference(image_file)
+        filename = image_filename(validated_image_file)
+    except ImagePathError:
         if allow_missing_images:
             return _unavailable_image_item(
                 image_file,
@@ -461,22 +470,6 @@ def _resolve_image(
             )
         report["errors"].append(_error("invalid_image_file", "image_file must be relative", index=index, image_file=image_file))
         return None
-    parts = [part for part in raw.split("/") if part]
-    if parts and parts[0] == "images":
-        parts = parts[1:]
-    if len(parts) != 1 or parts[0] in {".", ".."} or ".." in parts[0]:
-        if allow_missing_images:
-            return _unavailable_image_item(
-                image_file,
-                images_dir,
-                index,
-                report,
-                reason="invalid_image_file",
-                message="image_file must point to a file in images/; fallback text was inserted",
-            )
-        report["errors"].append(_error("invalid_image_file", "image_file must point to a file in images/", index=index, image_file=image_file))
-        return None
-    filename = parts[0]
     extension = Path(filename).suffix.lower()
     media_type = IMAGE_MEDIA_TYPES.get(extension)
     if media_type is None:
@@ -492,8 +485,29 @@ def _resolve_image(
             )
         report["errors"].append(_error("unsupported_image_type", "image type must be png, jpg, or jpeg", index=index, image_file=image_file))
         return None
-    source = images_dir / filename
-    if not source.exists():
+    try:
+        resolved_image = resolve_existing_image(images_dir, validated_image_file)
+    except AmbiguousImagePathError as error:
+        report["errors"].append(
+            _error("ambiguous_image_file", str(error), index=index, image_file=image_file)
+        )
+        return None
+    except ImagePathError:
+        if allow_missing_images:
+            return _unavailable_image_item(
+                image_file,
+                images_dir,
+                index,
+                report,
+                filename=filename,
+                reason="invalid_image_path",
+                message="image_file resolves outside images/; fallback text was inserted",
+            )
+        report["errors"].append(
+            _error("invalid_image_path", "image_file resolves outside images/", index=index, image_file=image_file)
+        )
+        return None
+    if resolved_image is None:
         if allow_missing_images:
             image_item = _missing_image_item(image_file, images_dir, index, filename=filename)
             report["warnings"].append(
@@ -506,21 +520,17 @@ def _resolve_image(
                 )
             )
             return image_item
-        report["errors"].append(_error("missing_image", "image_file is missing", index=index, image_file=image_file, path=str(source)))
-        return None
-    if not source.is_file():
-        if allow_missing_images:
-            return _unavailable_image_item(
-                image_file,
-                images_dir,
-                index,
-                report,
-                filename=filename,
-                reason="invalid_image_path",
-                message="image_file is not a file; fallback text was inserted",
+        report["errors"].append(
+            _error(
+                "missing_image",
+                "image_file is missing",
+                index=index,
+                image_file=image_file,
+                path=str(images_dir / filename),
             )
-        report["errors"].append(_error("invalid_image_path", "image_file is not a file", index=index, image_file=image_file, path=str(source)))
+        )
         return None
+    source = resolved_image.path
     if not _image_file_readable(source):
         if allow_missing_images:
             return _unavailable_image_item(

@@ -6,13 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from pef2_engine import workspace_paths
+from pef2_engine.image_paths import (
+    ImagePathError,
+    image_compare_key,
+    image_filename,
+    resolve_existing_image,
+    validate_image_reference,
+)
 from pef2_engine.io_utils import read_json, write_json
 
 
 SCHEMA_VERSION = "image-alt-review-1"
 SMALL_IMAGE_THRESHOLD_PX = 65
 AUTO_DECORATIVE_REASON = "auto_small_image_65px"
-ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 DEFAULT_IMAGE_ALT_LENGTH_TARGET = 100
 IMAGE_ALT_LENGTH_TARGET_OPTIONS = (50, DEFAULT_IMAGE_ALT_LENGTH_TARGET, 300)
 
@@ -133,9 +139,16 @@ def _current_items_from_processed(work_dir: Path, processed: dict[str, Any]) -> 
     for segment in _processed_segments(processed):
         if not _is_image_segment(segment):
             continue
-        image_path = _normalize_image_path(str(segment.get("image_file") or ""))
-        filename = _safe_image_filename(image_path)
-        resolved_path = work_dir / "images" / filename if filename else None
+        source_image_path = str(segment.get("image_file") or "")
+        try:
+            image_path = validate_image_reference(source_image_path)
+            filename = image_filename(image_path)
+            resolved = resolve_existing_image(work_dir / "images", image_path)
+            resolved_path = resolved.path if resolved is not None else None
+        except ImagePathError:
+            image_path = source_image_path.strip()
+            filename = ""
+            resolved_path = None
         width, height = image_dimensions(resolved_path)
         exists = bool(resolved_path and resolved_path.is_file())
         auto_decorative = bool(width and height and (width <= SMALL_IMAGE_THRESHOLD_PX or height <= SMALL_IMAGE_THRESHOLD_PX))
@@ -283,42 +296,13 @@ def _is_image_segment(segment: dict[str, Any]) -> bool:
     return segment.get("block_type") == "image" or segment.get("is_image") is True
 
 
-def _normalize_image_path(image_file: str) -> str:
-    raw = image_file.strip().replace("\\", "/")
-    if not raw:
-        return ""
-    parts = [part for part in raw.split("/") if part]
-    if len(parts) == 1:
-        return f"images/{parts[0]}"
-    return "/".join(parts)
-
-
-def _safe_image_filename(image_path: str) -> str:
-    raw = image_path.strip().replace("\\", "/")
-    if raw.startswith("/") or not raw:
-        return ""
-    parts = [part for part in raw.split("/") if part]
-    if len(parts) != 2 or parts[0] != "images":
-        return ""
-    filename = parts[1]
-    if filename in {".", ".."} or ".." in filename:
-        return ""
-    if "/" in filename or "\\" in filename:
-        return ""
-    if Path(filename).name != filename:
-        return ""
-    if Path(filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
-        return ""
-    return filename
-
-
 def _index_key(value: Any) -> str:
     text = str(value or "").strip()
     return text
 
 
 def _text_key(value: Any) -> str:
-    return str(value or "").strip()
+    return image_compare_key(value)
 
 
 def image_dimensions(path: Path | None) -> tuple[int | None, int | None]:

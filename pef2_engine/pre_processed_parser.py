@@ -17,7 +17,10 @@ from version import VERSION
 SCHEMA_VERSION = "pef2-pre-processed-0.1"
 PURPOSE = "pef2_step6_pre_processed"
 NLM_SIMPLE_SCHEMA_PREFIX = "pef2-nlm-simple"
+LEGACY_TITLE_MAX_LENGTH = 100
 HD_TITLE_DISPLAY_PATTERN = re.compile(r"^(?:[一二三四五六七八九十]|第[0-9０-９一二三四五六七八九十]+章)$")
+LEGACY_KANJI_TITLE_PATTERN = re.compile(r"^[一二三四五六七八九十百壱弐参]+$")
+LEGACY_NUMBERED_TITLE_PATTERN = re.compile(r"^(第)?[0-9１２３４５６７８９０一二三四五六七八九十百]+[章節回集巻].*$")
 LEGACY_SENTENCE_SPLIT_PATTERN = re.compile(
     r"(?<=[。！？][」』）］\)])|(?<=[。！？])(?![」』）］\)])"
 )
@@ -167,13 +170,14 @@ def import_plain_text_segments(text: str) -> list[dict]:
             in_paragraph = True
             continue
 
-        if HD_TITLE_DISPLAY_PATTERN.fullmatch(display):
+        title_display = legacy_plain_text_title_display(display)
+        if title_display is not None:
             segments.append(
                 {
                     "source_index": line_number,
                     "block_type": "title",
-                    "display": display,
-                    "audio_seed": display,
+                    "display": title_display,
+                    "audio_seed": title_display,
                     "lower_display": "",
                     "is_image": False,
                     "image_file": "",
@@ -195,6 +199,19 @@ def import_plain_text_segments(text: str) -> list[dict]:
             in_paragraph = True
 
     return segments
+
+
+def legacy_plain_text_title_display(display: str) -> str | None:
+    text = display.strip()
+    if not text or "。" in text or len(text) >= LEGACY_TITLE_MAX_LENGTH:
+        return None
+    if text.startswith("# "):
+        return text[2:].strip()
+    if LEGACY_KANJI_TITLE_PATTERN.fullmatch(text) and len(text) < 10:
+        return text
+    if LEGACY_NUMBERED_TITLE_PATTERN.fullmatch(text):
+        return text
+    return None
 
 
 def split_plain_text_line_to_segments(line: str, *, source_index: int, para_start: bool) -> list[dict]:

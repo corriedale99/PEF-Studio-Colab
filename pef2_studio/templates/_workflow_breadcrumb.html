@@ -1,0 +1,7 @@
+{% if workflow_steps %}
+  <div class="workflow-steps workflow-breadcrumb topbar-workflow" aria-label="処理の流れ">
+    {% for step in workflow_steps %}
+      <span class="workflow-step workflow-breadcrumb-step workflow-{% if step.state == 'pending' %}todo{% else %}{{ step.state }}{% endif %}">{% if step.marker %}<span class="workflow-marker">{{ step.marker }}</span>{% endif %}{{ step.label }}</span>
+    {% endfor %}
+  </div>
+{% endif %}

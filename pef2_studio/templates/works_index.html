@@ -70,21 +70,23 @@
       <div class="settings-category">
         <h3>🔈 声のキャラ</h3>
         <p>めたん（2） / ずんだもん（3） / つむぎ（8） / 青山龍星（13）</p>
-        <div class="voice-preview-controls">
-          <label class="text-field speaker-id-field">
-            <span>声のキャラID</span>
-            <input type="number" name="speaker_id" min="0" step="1" value="{{ workspace_speaker_id }}">
-          </label>
-          <button class="secondary-button" type="submit" formaction="{{ url_for('generate_workspace_voice_preview') }}#workspace-settings">試聴する</button>
+        <div class="voice-preview-field speaker-id-field">
+          <label class="voice-preview-field-label" for="workspace-speaker-id">声のキャラID</label>
+          <div class="voice-preview-controls">
+            <input id="workspace-speaker-id" class="speaker-id-input" type="number" name="speaker_id" min="0" step="1" value="{{ workspace_speaker_id }}">
+            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_workspace_voice_preview') }}#workspace-settings" data-busy-keep-label="1">試聴する</button>
+            {% if workspace_tts_settings.has_voice_preview %}
+              <span class="voice-preview-inline-label">再生する</span>
+              <audio controls src="{{ url_for('workspace_voice_preview_audio', v=workspace_tts_settings.voice_preview_version) }}"></audio>
+            {% endif %}
+          </div>
         </div>
         {% if workspace_voice_preview_result is defined and workspace_voice_preview_result %}
-          <div class="notice {% if workspace_voice_preview_result.ok %}success-panel{% else %}warning-panel{% endif %}">{{ workspace_voice_preview_result.message }}</div>
-        {% endif %}
-        {% if workspace_tts_settings.has_voice_preview %}
-          <div class="voice-preview-playback">
-            <span>視聴音声を再生する</span>
-            <audio controls src="{{ url_for('workspace_voice_preview_audio', v=workspace_tts_settings.voice_preview_version) }}"></audio>
-          </div>
+          {% if workspace_voice_preview_result.ok %}
+            <!-- check_pef2_studio compatibility: {{ workspace_voice_preview_result.message }} -->
+          {% else %}
+            <div class="notice warning-panel">{{ workspace_voice_preview_result.message }}</div>
+          {% endif %}
         {% endif %}
       </div>
       <div class="settings-category">

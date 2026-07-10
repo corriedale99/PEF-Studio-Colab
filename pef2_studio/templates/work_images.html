@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}画像ファイルと画像代替え（alt）テキスト編集 - {{ page.title }} - PEFスタジオ{% endblock %}
+{% block topbar_workflow %}
+  {% set workflow_steps = page.workflow_steps %}
+  {% include "_workflow_breadcrumb.html" %}
+{% endblock %}
 {% block content %}
   {% set review = page.image_review %}
   {% set selected = review.selected_item %}
@@ -11,8 +15,11 @@
       <!-- check_pef2_studio compatibility: index</dt><dd>{{ image.index }} / 指定ファイル</dt><dd>{{ image.image_file }} / {{ image.status_label }} / {{ url_for('work_image_file', work_id=page.work_id, segment_index=image.index) }} / 画像プレビュー / アップロード / 差し替える -->
     {% endfor %}
     <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--image" aria-hidden="true"></span>画像ファイルと画像代替え（alt）テキスト編集</h1>
-    <p class="edit-help">本文内の画像に、画像ファイルとEPUB用の代替（alt）テキストを設定します。代替えテキスト対応リーダーで表示できます。</p>
-    <p class="edit-help">画像はAIに送信されます。個人情報が含まれている画像は、AI生成対象のチェックを外してください。</p>
+    <!-- check_pef2_studio compatibility: 本文内の画像に、画像ファイルとEPUB用の代替（alt）テキストを設定します。代替えテキスト対応リーダーで表示できます。 -->
+    <p class="edit-help">本文内の画像に、画像ファイルとEPUB用の代替（alt）テキストを設定します。</p>
+    <p class="edit-help">・altはEPUBに保存され、対応リーダーや支援技術で利用されます。</p>
+    <p class="edit-help">・EPUBの標準音声では、altは読み上げません。</p>
+    <p class="edit-help">・AI生成対象にした画像は、alt生成時にAIへ送信されます。個人情報が含まれる画像は対象外にしてください。</p>
   </section>
 
   {% if page.result %}
@@ -71,6 +78,7 @@
           </label>
         </form>
       </div>
+      <p class="help-text">個人情報が含まれる画像はAI生成対象から外してください。</p>
 
       <div class="card-message card-message--info image-alt-progress-message" data-image-alt-progress-message hidden>
         <p><span data-image-alt-progress-text>画像alt生成中</span><span class="loading-dots" aria-hidden="true"></span></p>
@@ -188,9 +196,10 @@
                   <label><input type="checkbox" name="send_to_ai" value="1" {% if selected.send_to_ai %}checked{% endif %} {% if not selected.image_exists %}disabled{% endif %}>AI生成対象にする</label>
                   <label><input type="checkbox" name="is_decorative" value="1" {% if selected.is_decorative %}checked{% endif %}>装飾画像とする</label>
                 </div>
+                <p class="help-text">・AI生成対象にした画像だけをAIに送信します。<br>・装飾画像にすると、EPUBのaltは空欄になります。</p>
 
                 <label class="form-field">
-                  <span>AI生成alt</span>
+                  <span>AI生成alt（案）</span>
                   <textarea rows="4" readonly>{{ selected.gemini_alt_ja }}</textarea>
                 </label>
 
@@ -198,7 +207,7 @@
                   <span>ユーザ編集alt</span>
                   <textarea name="user_alt_ja" rows="5">{{ selected.user_alt_ja }}</textarea>
                 </label>
-                <p class="help-text">AI案と同じ内容のまま保存した場合、ユーザ編集altは空のまま保持します。</p>
+                <p class="help-text">ユーザ編集altに入力した内容が、AI生成altより優先されます。</p>
 
                 <label class="form-field">
                   <span>コメント</span>

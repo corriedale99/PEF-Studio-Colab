@@ -31,6 +31,13 @@ from pef2_engine.image_alt_review import (
     sync_image_alt_review,
     save_image_alt_review,
 )
+from pef2_engine.image_paths import (
+    ImagePathError,
+    image_filename,
+    normalize_nfc,
+    resolve_existing_image,
+    resolve_image_upload_target,
+)
 from pef2_engine.legacy_dictionary_import import (
     LegacyDictionaryImportValidationError,
     build_dictionary_review_from_legacy_dictionary,
@@ -437,6 +444,7 @@ def load_work_images_page(
     if work_dir is None:
         return None
     meta = _read_optional_dict(work_dir / workspace_paths.WORK_META_FILENAME)
+    effective_status = _effective_status(work_dir, str(meta.get("status") or ""))
     image_review = build_work_image_alt_review_view(
         work_dir,
         selected_segment_index=selected_segment_index,
@@ -448,6 +456,7 @@ def load_work_images_page(
         "title": _work_title(work_dir.name, meta),
         "image_summary": build_work_image_summary(work_dir),
         "image_review": image_review,
+        "workflow_steps": workflow_steps(effective_status, current_label="画像編集"),
         "result": result,
     }
 
@@ -614,8 +623,10 @@ def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: st
         return _image_upload_result("failed", IMAGE_UPLOAD_FORMAT_ERROR_MESSAGE, "invalid_extension")
 
     image_dir = work_dir / "images"
-    image_dir.mkdir(parents=True, exist_ok=True)
-    target_path = item["path"]
+    try:
+        target_path = resolve_image_upload_target(image_dir, str(item.get("image_file") or ""))
+    except ImagePathError:
+        return _image_upload_result("failed", "画像の保存先を確認してください。", "invalid_image_file")
     tmp_path: Path | None = None
     total_size = 0
     try:
@@ -846,15 +857,24 @@ def build_image_items(work_dir: Path, processed_data: Any) -> list[dict]:
         if not _is_image_segment(segment):
             continue
         image_file = str(segment.get("image_file") or "").strip()
-        filename = _safe_image_filename(image_file)
-        image_path = work_dir / "images" / filename if filename else work_dir / "images"
-        exists = bool(filename) and image_path.is_file()
+        images_dir = work_dir / "images"
+        try:
+            filename = image_filename(image_file)
+            resolved = resolve_existing_image(images_dir, image_file)
+            image_path = resolved.path if resolved is not None else images_dir / normalize_nfc(filename)
+            exists = resolved is not None
+            is_safe = True
+        except ImagePathError:
+            filename = ""
+            image_path = images_dir
+            exists = False
+            is_safe = False
         items.append(
             {
                 "index": segment.get("index", ""),
                 "image_file": image_file,
                 "filename": filename,
-                "is_safe": bool(filename),
+                "is_safe": is_safe,
                 "path": image_path,
                 "exists": exists,
                 "status_label": "アップロード済み" if exists else "未アップロード",
@@ -1239,6 +1259,7 @@ def load_dictionary_review_page(
         return None
 
     meta = _read_optional_dict(work_dir / workspace_paths.WORK_META_FILENAME)
+    effective_status = _effective_status(work_dir, str(meta.get("status") or ""))
     review_path = workspace_paths.dictionary_review_path(work_dir)
     review_data = _read_required_dictionary_review(review_path)
     if not isinstance(review_data, dict):
@@ -1256,9 +1277,8 @@ def load_dictionary_review_page(
         "work_id": work_dir.name,
         "title": _work_title(work_dir.name, meta),
         "status": str(meta.get("status") or "unknown"),
-        "status_label": status_label(
-            _effective_status(work_dir, str(meta.get("status") or ""))
-        ),
+        "status_label": status_label(effective_status),
+        "workflow_steps": workflow_steps(effective_status),
         "back_to_detail_ready": (
             work_dir / workspace_paths.PROCESSED_JSON_FILENAME
         ).exists(),
@@ -2292,16 +2312,19 @@ def paginate_segments(
     }
 
 
-def workflow_steps(status: str) -> list[dict]:
+def workflow_steps(status: str, current_label: str | None = None) -> list[dict]:
     labels = [
         "原稿取込",
         "辞書準備",
         "読みと息継ぎ編集",
+        "画像編集",
         "編集完了",
         "EPUB作成",
         "完成",
     ]
     current_index = _workflow_current_index(status)
+    if current_label in labels:
+        current_index = labels.index(current_label)
     steps: list[dict] = []
     for index, label in enumerate(labels):
         if index < current_index:
@@ -2363,9 +2386,9 @@ def _workflow_current_index(status: str) -> int:
     if status in {"processed", "draft_saved"}:
         return 2
     if status in {"finalized", "audio_generated"}:
-        return 4
-    if status == "exported":
         return 5
+    if status == "exported":
+        return 6
     return 0
 
 
@@ -2630,25 +2653,6 @@ def _image_item_by_index(work_dir: Path, segment_index: str) -> dict | None:
         if str(item.get("index") or "") == target_index:
             return item
     return None
-
-
-def _safe_image_filename(image_file: str) -> str:
-    raw = image_file.strip().replace("\\", "/")
-    if raw.startswith("/") or not raw:
-        return ""
-    parts = [part for part in raw.split("/") if part]
-    if len(parts) != 2 or parts[0] != "images":
-        return ""
-    filename = parts[1]
-    if filename in {".", ".."} or ".." in filename:
-        return ""
-    if "/" in filename or "\\" in filename:
-        return ""
-    if Path(filename).name != filename:
-        return ""
-    if Path(filename).suffix.lower() not in ALLOWED_IMAGE_UPLOAD_EXTENSIONS:
-        return ""
-    return filename
 
 
 def _looks_like_allowed_image(path: Path) -> bool:

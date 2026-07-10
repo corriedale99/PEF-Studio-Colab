@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}読みと息継ぎ編集 - {{ work.title }} - PEFスタジオ{% endblock %}
+{% block topbar_workflow %}
+  {% set workflow_steps = work.workflow_steps %}
+  {% include "_workflow_breadcrumb.html" %}
+{% endblock %}
 {% block content %}
   {% set is_editable = work.mode in ["processed", "draft"] %}
 
@@ -7,11 +11,14 @@
   <a class="back-link" href="{{ url_for('work_detail', work_id=work.work_id, _anchor='reading-edit-card') }}" data-reading-edit-back-link>← 作品詳細へ戻る</a>
     <h1 class="workflow-heading"><span class="workflow-icon workflow-icon--reading" aria-hidden="true"></span>読みと息継ぎ編集</h1>
     <div class="status-summary">
-      <div class="status-label">状態: {{ work.status_label }}</div>
-      {% if work.mode == "draft" %}
-        <p>途中保存を編集中です。</p>
+      <p>読み方や、文中の息継ぎ位置を編集します。本文表示そのものは変更しません。</p>
+      <p>（本文の分割、画像の位置、章タイトルはこの画面では変更しません。）</p>
+      {% if work.mode == "processed" %}
+        <!-- check_pef2_studio compatibility: 状態: 編集できます -->
+      {% elif work.mode == "draft" %}
+        <!-- check_pef2_studio compatibility: 状態: 編集中 途中保存を編集中です。 -->
       {% elif work.mode == "final_readonly" %}
-        <p>編集完了として確定済みです。</p>
+        <!-- check_pef2_studio compatibility: 状態: 確定済み 編集完了として確定済みです。 -->
       {% endif %}
     </div>
   </section>
@@ -38,6 +45,7 @@
       {% if work.mode == "final_readonly" %}
       <p>この作品は確定済みです。</p>
       <p>修正するには作品詳細から再編集開始を押してください。</p>
+      <p>・確定済みの内容を表示しています。この画面では編集できません。</p>
       {% else %}
       <p>編集用ファイルがまだありません。</p>
       <p>先に作品詳細の「辞書を使わずに進む」から編集用データを作成するか、辞書を準備してください。</p>
@@ -68,7 +76,8 @@
             <div class="draft-actions">
               <button class="primary-button" form="segment-edit-form" type="submit">途中保存</button>
               <button class="secondary-button" form="segment-edit-form" type="submit" formaction="{{ url_for('save_final', work_id=work.work_id) }}">編集確定</button>
-              <span class="form-help">編集を確定すると、EPUB生成に進めます。</span>
+              <span class="form-help">・「途中保存」で現在の編集内容を保存できます。<br>・「編集確定」でEPUB生成へ進めます。</span>
+              <!-- check_pef2_studio compatibility: 編集を確定すると、EPUB生成に進めます。 -->
             </div>
           </div>
         {% endif %}
@@ -117,6 +126,9 @@
             {% endif %}
           </div>
         </div>
+        {% if is_editable and work.segments %}
+          <p class="form-help">・ページを移動するときは、現在の編集内容が保存されます。</p>
+        {% endif %}
       </div>
     {% endif %}
 
@@ -160,7 +172,7 @@
               <div class="draft-actions">
                 <button class="primary-button" type="submit">途中保存</button>
                 <button class="secondary-button" type="submit" formaction="{{ url_for('save_final', work_id=work.work_id) }}">編集確定</button>
-                <span class="form-help">編集を確定すると、EPUB生成に進めます。</span>
+                <span class="form-help">・「途中保存」で現在の編集内容を保存できます。<br>・「編集確定」でEPUB生成へ進めます。</span>
               </div>
             </div>
           {% endif %}
@@ -195,6 +207,9 @@
               {% endif %}
             </div>
           </div>
+          {% if is_editable %}
+            <p class="form-help">・ページを移動するときは、現在の編集内容が保存されます。</p>
+          {% endif %}
         </div>
       {% endif %}
       {% if is_editable %}

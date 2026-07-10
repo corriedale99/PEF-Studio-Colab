@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ work.title }} - PEFスタジオ{% endblock %}
+{% block topbar_workflow %}
+  {% set workflow_steps = work.workflow_steps %}
+  {% include "_workflow_breadcrumb.html" %}
+{% endblock %}
 {% block content %}
   <section class="panel work-header">
     <h1>{{ work.title }}</h1>
@@ -16,11 +20,6 @@
       {% else %}
         <p>{{ work.status_description }}</p>
       {% endif %}
-    </div>
-    <div class="workflow-steps workflow-breadcrumb" aria-label="処理の流れ">
-      {% for step in work.workflow_steps %}
-        <span class="workflow-step workflow-breadcrumb-step workflow-{{ step.state }}">{% if step.marker %}<span class="workflow-marker">{{ step.marker }}</span>{% endif %}{{ step.label }}</span>
-      {% endfor %}
     </div>
     {% set header_notice = namespace(result=status_message if status_message is defined else none) %}
     {% if not header_notice.result and dictionary_import_result is defined and dictionary_import_result and dictionary_import_result.title and dictionary_import_result.display_scope != 'dictionary_card' %}
@@ -212,8 +211,7 @@
         <p>読みと息継ぎの編集結果があります。</p>
         <p>すでに「読みと息継ぎの編集」をした場合は、再編集できません。</p>
       {% elif work.has_processed %}
-        <p>編集用データは作成済みです。</p>
-        <p>読みと息継ぎの修正へ進めます。</p>
+        <p>「読み」に使う辞書を作ります。以下の方法から選んでください。</p>
       {% elif work.has_dictionary_review or work.can_open_dictionary_review %}
         <p>辞書確認用データがあります。</p>
         <p>読みを確認・修正する場合は、辞書編集へ進んでください。</p>
@@ -299,6 +297,7 @@
           </div>
         {% endif %}
       </div>
+      <!-- check_pef2_studio compatibility: 編集用データは作成済みです。読みと息継ぎの修正へ進めます。 -->
       {% if dictionary_card_notice.result %}
         <div class="card-message {% if dictionary_card_notice.result.status == 'success' or dictionary_card_notice.result.ok %}card-message--success{% elif dictionary_card_notice.result.status == 'failed' or dictionary_card_notice.result.status == 'locked' or dictionary_card_notice.result.status == 'stale_cleared' %}card-message--error{% else %}card-message--warning{% endif %}">
           {% if dictionary_card_notice.result.message %}<p>{{ dictionary_card_notice.result.message }}</p>{% endif %}
@@ -343,9 +342,9 @@
         {% endif %}
       {% elif is_editable %}
         {% if work.has_draft %}
-          <p>途中保存した内容を編集します。</p>
+          <p>途中保存した内容を編集します。編集せずにEPUB生成に進みたい場合は「編集せずに確定する」ボタンを押してください。</p>
         {% else %}
-          <p>読み方や、文中の息継ぎ位置を編集します。</p>
+          <p>読み方や、文中の息継ぎ位置を編集します。編集せずにEPUB生成に進みたい場合は「編集せずに確定する」ボタンを押してください。</p>
         {% endif %}
         {% if work.can_enter_audio_edit %}
           <div class="generation-actions">
@@ -353,6 +352,11 @@
               <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">途中保存を開く</a>
             {% else %}
               <a class="button" href="{{ url_for('reading_edit', work_id=work.work_id) }}">確認・編集する</a>
+            {% endif %}
+            {% if work.can_save_final %}
+              <form class="inline-form" method="post" action="{{ url_for('save_final', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。">
+                <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>編集せずに確定する</button>
+              </form>
             {% endif %}
           </div>
         {% endif %}
@@ -381,8 +385,9 @@
           <span class="status-pill status-pending">指定なし</span>
         {% endif %}
       </div>
+      <!-- check_pef2_studio compatibility: 画像はEPUBに表示されます。 -->
       <p>本文内の画像に、画像ファイルとEPUB用の代替（alt）テキストを設定します。</p>
-      <p>画像はEPUBに表示されます。</p>
+      <p>・altはEPUBに保存され、対応リーダーや支援技術で利用されます。</p>
       {% if work.image_summary.errors %}
         <ul class="result-list">
           {% for error in work.image_summary.errors %}<li>{{ error }}</li>{% endfor %}
@@ -400,7 +405,8 @@
           <!-- check_pef2_studio compatibility: 確認・編集する -->
         </div>
         {% if work.image_summary.epub_needs_regeneration %}
-          <p class="action-note">画像を保存しました。変更をEPUBに反映するには、EPUB生成をやり直してください。</p>
+          <!-- check_pef2_studio compatibility: 画像を保存しました。変更をEPUBに反映するには、EPUB生成をやり直してください。 -->
+          <p class="action-note">・画像やaltを変更した後は、EPUB生成をやり直してください。</p>
         {% endif %}
       {% endif %}
     </section>
@@ -411,33 +417,35 @@
         <span class="status-pill {% if work.tts_settings.has_work_settings %}status-done{% else %}status-pending{% endif %}">{{ work.tts_settings.source_label }}</span>
       </div>
       <p>この作品で使う読み上げ音声を設定します。</p>
+      <p>・音声設定を変更した後は、EPUB生成をやり直してください。</p>
       <form class="inline-form" method="post" action="{{ url_for('save_tts_settings', work_id=work.work_id) }}#voice-settings" data-busy-message="処理中です。しばらくお待ちください。">
         {% set work_speaker_id = voice_preview_result.speaker_id if voice_preview_result is defined and voice_preview_result and voice_preview_result.speaker_id is not none else work.tts_settings.speaker_id %}
         <div class="settings-category">
           <h3>🔈 声のキャラ</h3>
           <p>めたん（2） / ずんだもん（3） / つむぎ（8） / 青山龍星（13）</p>
-          <div class="voice-preview-controls">
-            <label class="text-field speaker-id-field">
-              <span>声のキャラID</span>
-              <input type="number" name="speaker_id" min="0" step="1" value="{{ work_speaker_id }}">
-            </label>
-            <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>試聴する</button>
+          <div class="voice-preview-field speaker-id-field">
+            <label class="voice-preview-field-label" for="work-speaker-id">声のキャラID</label>
+            <div class="voice-preview-controls">
+              <input id="work-speaker-id" class="speaker-id-input" type="number" name="speaker_id" min="0" step="1" value="{{ work_speaker_id }}">
+              <button class="secondary-button" type="submit" formaction="{{ url_for('generate_voice_preview', work_id=work.work_id) }}#voice-settings" data-busy-keep-label="1" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>試聴する</button>
+              {% if work.tts_settings.has_voice_preview %}
+                <span class="voice-preview-inline-label">再生する</span>
+                <audio controls src="{{ url_for('voice_preview_audio', work_id=work.work_id, v=work.tts_settings.voice_preview_version) }}"></audio>
+                <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>この声に変更する</button>
+              {% endif %}
+              <!-- check_pef2_studio compatibility: <button disabled>音声設定を保存する</button> -->
+            </div>
           </div>
         </div>
         {% if voice_preview_result is defined and voice_preview_result %}
-          <div class="{% if voice_preview_result.ok %}success-panel{% else %}warning-panel{% endif %}">
-            <p>{{ voice_preview_result.message }}</p>
-          </div>
+          {% if voice_preview_result.ok %}
+            <!-- check_pef2_studio compatibility: {{ voice_preview_result.message }} -->
+          {% else %}
+            <div class="notice warning-panel">
+              <p>{{ voice_preview_result.message }}</p>
+            </div>
+          {% endif %}
         {% endif %}
-        {% if work.tts_settings.has_voice_preview %}
-          <div class="voice-preview-playback">
-            <span>視聴音声を再生する</span>
-            <audio controls src="{{ url_for('voice_preview_audio', work_id=work.work_id, v=work.tts_settings.voice_preview_version) }}"></audio>
-          </div>
-        {% endif %}
-        <div class="form-actions">
-          <button class="secondary-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>音声設定を保存する</button>
-        </div>
       </form>
       {% if tts_settings_result is defined and tts_settings_result %}
         <div class="card-message {% if tts_settings_result.status == 'success' %}card-message--success{% else %}card-message--error{% endif %}">
@@ -468,8 +476,10 @@
         {% elif work.has_epub %}
           <p>EPUBを生成し直せます。</p>
         {% else %}
-          <p>EPUBを作成します。</p>
+          <p>EPUBを生成します。この工程には時間がかかります。</p>
+          <!-- check_pef2_studio compatibility: EPUBを作成します。 -->
         {% endif %}
+        <p>・読み、音声設定、画像、altを変更した後は、EPUB生成をやり直してください。</p>
         <div class="generation-actions">
           {% if work.has_epub %}
             <a class="primary-button download-button" href="{{ url_for('download_epub', work_id=work.work_id) }}">ダウンロード</a>

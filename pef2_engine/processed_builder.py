@@ -10,6 +10,7 @@ from typing import Any
 
 from pef2_engine.audio_preview import BudouxUnavailableError, apply_machine_breath, build_text_plain_for_tts
 from pef2_engine.dictionary_loader import build_text_ssml, find_dictionary_matches
+from pef2_engine.image_paths import ImagePathError, normalize_image_reference
 from pef2_engine.io_utils import read_json, write_json
 from pef2_engine.paths import resolve_named_file
 from pef2_engine.ruby import strip_aozora_ruby
@@ -22,7 +23,7 @@ SCHEMA_VERSION = "processed-1"
 REPORT_SCHEMA_VERSION = "processed-builder-report-1"
 STEP6C_REPORT_SCHEMA_VERSION = "processed_report-1"
 STEP6C_PARTIAL_SCHEMA_VERSION = "processed_partial_result-1"
-IMAGE_MARKER_PATTERN = re.compile(r"^\[図:\s*(?P<image_file>[^\]]+?)\s*\]$")
+IMAGE_MARKER_PATTERN = re.compile(r"^\[図[:：]\s*(?P<image_file>[^\]]+?)\s*\]$")
 LEGACY_SUB_PATTERN = re.compile(
     r"<sub\s+alias=(?P<quote>['\"])(?P<alias>.*?)(?P=quote)>(?P<surface>.*?)</sub>"
 )
@@ -31,7 +32,6 @@ LEGACY_PAUSE_MARKER_PATTERN = re.compile(r"\[(?:S|M|L)-PAUSE\]")
 TRAILING_LEGACY_PAUSE_MARKER_PATTERN = re.compile(r"\s*(?P<marker>\[(?:S|M|L)-PAUSE\])\s*$")
 INCOMPLETE_SUB_PATTERN = re.compile(r"<sub\b|</sub>")
 
-DEFAULT_IMAGE_DIR = "images"
 DEFAULT_IMAGE_AUDIO_POLICY = "pause_only"
 DEFAULT_IMAGE_PAUSE_TYPE = "M-PAUSE"
 DEFAULT_INCLUDE_IMAGE_IN_AUDIO_TIMELINE = True
@@ -1066,8 +1066,14 @@ def validate_pre_processed_input(pre_processed: object, report: dict | None = No
             continue
 
         if block_type == "image" or segment.get("is_image") is True:
-            if not str(segment.get("image_file") or "").strip():
+            image_file = str(segment.get("image_file") or "").strip()
+            if not image_file:
                 errors.append(_error("missing_image_file", "image segment has no image_file", index=index))
+            else:
+                try:
+                    normalize_image_reference(image_file)
+                except ImagePathError:
+                    errors.append(_error("invalid_image_file", "image segment has invalid image_file", index=index))
         elif block_type in TEXT_BLOCK_TYPES:
             if not str(segment.get("display") or "").strip():
                 errors.append(_error("empty_display", "text/title segment display is empty", index=index))
@@ -1346,13 +1352,15 @@ def parse_image_marker(line: str) -> str:
     image_file = match.group("image_file").strip()
     if not image_file:
         return ""
-    if image_file.startswith(f"{DEFAULT_IMAGE_DIR}/"):
-        return image_file
-    return f"{DEFAULT_IMAGE_DIR}/{image_file}"
+    try:
+        return normalize_image_reference(image_file)
+    except ImagePathError:
+        return ""
 
 
 def build_image_segment(index: int, source_index: object, image_file: str, source_segment: dict | None = None) -> dict:
     source_segment = source_segment or {}
+    image_file = normalize_image_reference(image_file)
     processed = {
         "index": index,
         "source_index": source_index,

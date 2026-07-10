@@ -9,6 +9,7 @@
   <body>
     <header class="topbar">
       <a class="brand" href="{{ url_for('works_index') }}">PEFスタジオ 作品一覧</a>
+      {% block topbar_workflow %}{% endblock %}
     </header>
     <main class="page">
       {% block content %}{% endblock %}
@@ -33,12 +34,14 @@
             submitterValue.value = submitter.value;
             form.appendChild(submitterValue);
           }
-          submitter.classList.add("busy-submitter");
-          submitter.dataset.originalLabel = submitter.value || submitter.textContent || "";
-          if (submitter instanceof HTMLButtonElement) {
-            submitter.textContent = "処理中です";
-          } else if (submitter.type === "submit") {
-            submitter.value = "処理中です";
+          if (submitter.dataset.busyKeepLabel !== "1") {
+            submitter.classList.add("busy-submitter");
+            submitter.dataset.originalLabel = submitter.value || submitter.textContent || "";
+            if (submitter instanceof HTMLButtonElement) {
+              submitter.textContent = "処理中です";
+            } else if (submitter.type === "submit") {
+              submitter.value = "処理中です";
+            }
           }
         }
         form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((button) => {

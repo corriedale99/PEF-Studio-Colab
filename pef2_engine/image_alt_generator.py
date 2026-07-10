@@ -19,6 +19,7 @@ from pef2_engine.image_alt_review import (
     save_image_alt_review,
     sync_image_alt_review,
 )
+from pef2_engine.image_paths import ImagePathError, resolve_existing_image
 
 
 IMAGE_ALT_MODEL = "gemini-3.1-flash-lite"
@@ -314,12 +315,15 @@ def _item_by_segment_index(review: dict[str, Any], segment_index: str) -> dict[s
 
 
 def _item_image_path(work_dir: Path, item: dict[str, Any]) -> Path | None:
-    filename = str(item.get("filename") or "").strip()
-    if not filename or Path(filename).name != filename:
+    image_path = str(item.get("image_path") or "").strip()
+    if not image_path:
+        filename = str(item.get("filename") or "").strip()
+        image_path = f"images/{filename}" if filename else ""
+    try:
+        resolved = resolve_existing_image(work_dir / "images", image_path)
+    except ImagePathError:
         return None
-    if Path(filename).suffix.lower() not in IMAGE_SIGNATURES:
-        return None
-    return work_dir / "images" / filename
+    return resolved.path if resolved is not None else None
 
 
 def _looks_like_allowed_image(path: Path) -> bool:
