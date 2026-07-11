@@ -1060,10 +1060,23 @@ def resolve_work_image_file(workspace_root: Path, work_id: str, segment_index: s
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
         return None
-    item = _image_item_by_index(work_dir, segment_index)
-    if item is None or not item.get("is_safe") or not item.get("exists"):
+    selected = select_image_processed_file(work_dir)
+    if selected["path"] is None:
         return None
-    return item["path"]
+    try:
+        processed_data = read_json(selected["path"])
+    except Exception:
+        return None
+    target_index = str(segment_index)
+    for segment in _processed_segments(processed_data):
+        if not _is_image_segment(segment) or str(segment.get("index") or "") != target_index:
+            continue
+        items = build_image_items(work_dir, {"segments": [segment]})
+        item = items[0] if items else None
+        if item is None or not item.get("is_safe") or not item.get("exists"):
+            return None
+        return item["path"]
+    return None
 
 
 def _image_epub_needs_regeneration(work_dir: Path, image_items: list[dict]) -> bool:

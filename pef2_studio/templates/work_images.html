@@ -171,10 +171,12 @@
             {% for image in review.visible_items %}
               <a class="image-alt-list-item {% if selected and image.segment_index|string == selected.segment_index|string %}is-selected{% endif %}" href="{{ url_for('work_images', work_id=page.work_id, selected=image.segment_index, show_decorative='1' if review.show_decorative else None, show_thumbnails='1' if review.show_thumbnails else '0', _anchor='image-alt-workspace') }}">
                 <span class="image-list-main">
-                  {% if image.image_exists %}
-                    <img class="thumb" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.segment_index) }}" alt="">
-                  {% else %}
-                    <span class="thumb thumb--missing" aria-hidden="true"></span>
+                  {% if review.show_thumbnails %}
+                    {% if image.image_exists %}
+                      <img class="thumb" src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=image.segment_index) }}" alt="" loading="lazy" decoding="async" fetchpriority="low">
+                    {% else %}
+                      <span class="thumb thumb--missing" aria-hidden="true"></span>
+                    {% endif %}
                   {% endif %}
                   <span>
                     <span class="item-title">{{ image.filename or image.image_path or '画像ファイルなし' }}</span>
