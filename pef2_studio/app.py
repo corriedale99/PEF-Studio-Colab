@@ -60,6 +60,7 @@ from pef2_studio.workspace_view import (
     save_work_tts_settings_submission,
     save_workspace_tts_settings_submission,
     resolve_work_image_file,
+    resolve_work_image_source,
     resolve_work_dir,
     start_reedit_from_final,
 )
@@ -74,6 +75,10 @@ from pef2_engine.generation_lock import (
     clear_stale_generation_lock,
     is_generation_lock_stale,
     read_generation_lock,
+)
+from pef2_engine.thumbnail_cache import (
+    THUMBNAIL_PLACEHOLDER_PNG,
+    get_or_create_thumbnail,
 )
 from pef2_studio.generation import (
     build_generation_notice_result,
@@ -652,6 +657,50 @@ def create_app(workspace_root: Path | None = None):
         suffix = image_path.suffix.lower()
         mimetype = "image/png" if suffix == ".png" else "image/jpeg"
         return send_file(image_path, mimetype=mimetype)
+
+    @app.get("/works/<work_id>/images/<segment_index>/thumbnail")
+    def work_image_thumbnail(work_id: str, segment_index: str):
+        source = resolve_work_image_source(
+            resolved_workspace_root, work_id, segment_index
+        )
+        if source is None:
+            abort(404)
+        try:
+            entry = get_or_create_thumbnail(
+                resolved_workspace_root,
+                work_id,
+                str(source["image_file"]),
+                Path(source["path"]),
+            )
+        except Exception:
+            app.logger.exception(
+                "Thumbnail response used placeholder for work image cache failure"
+            )
+            response = app.response_class(
+                THUMBNAIL_PLACEHOLDER_PNG,
+                status=200,
+                mimetype="image/png",
+            )
+            response.headers["Cache-Control"] = "private, no-cache"
+            return response
+
+        if request.if_none_match.contains(entry.etag):
+            response = app.response_class(status=304)
+            response.headers["Cache-Control"] = "private, no-cache"
+            response.set_etag(entry.etag)
+            return response
+
+        output_format = str(entry.metadata.get("source", {}).get("output_format") or "")
+        mimetype = "image/png" if output_format == "PNG" else "image/jpeg"
+        response = send_file(
+            entry.path,
+            mimetype=mimetype,
+            conditional=False,
+            etag=False,
+        )
+        response.headers["Cache-Control"] = "private, no-cache"
+        response.set_etag(entry.etag)
+        return response
 
     @app.post("/works/<work_id>/dictionary-review/add-item")
     def add_dictionary_review_item(work_id: str):

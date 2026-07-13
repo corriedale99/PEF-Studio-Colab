@@ -1,6 +1,7 @@
 flask
 budoux
 google-generativeai
+Pillow
 python-dotenv
 sudachidict_core
 sudachipy

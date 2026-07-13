@@ -1056,7 +1056,11 @@ def build_image_items(work_dir: Path, processed_data: Any) -> list[dict]:
     return items
 
 
-def resolve_work_image_file(workspace_root: Path, work_id: str, segment_index: str) -> Path | None:
+def resolve_work_image_source(
+    workspace_root: Path,
+    work_id: str,
+    segment_index: str,
+) -> dict[str, Any] | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
         return None
@@ -1075,8 +1079,16 @@ def resolve_work_image_file(workspace_root: Path, work_id: str, segment_index: s
         item = items[0] if items else None
         if item is None or not item.get("is_safe") or not item.get("exists"):
             return None
-        return item["path"]
+        return {
+            "path": item["path"],
+            "image_file": normalize_image_reference(str(item.get("image_file") or "")),
+        }
     return None
+
+
+def resolve_work_image_file(workspace_root: Path, work_id: str, segment_index: str) -> Path | None:
+    source = resolve_work_image_source(workspace_root, work_id, segment_index)
+    return source["path"] if source is not None else None
 
 
 def _image_epub_needs_regeneration(work_dir: Path, image_items: list[dict]) -> bool:
