@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import math
 import os
 import re
@@ -71,6 +72,12 @@ from pef2_engine.tts_settings import (
     write_workspace_settings,
     write_work_tts_settings,
 )
+from pef2_engine.thumbnail_cache import (
+    ThumbnailCandidate,
+    build_thumbnail_candidate,
+    discard_thumbnail_candidate,
+    replace_image_and_activate_thumbnail,
+)
 from pef2_engine.tts_generator import VOICE_PREVIEW_DIRNAME, VOICE_PREVIEW_FILENAME, WORKSPACE_TEMP_DIRNAME
 
 STATUS_LABELS = {
@@ -83,6 +90,7 @@ STATUS_LABELS = {
     "audio_generated": "確定済み",
     "exported": "出力済み",
 }
+LOGGER = logging.getLogger(__name__)
 DICTIONARY_REVIEW_DECISION_LABELS = {
     "pending": "未確認",
     "accept": "採用",
@@ -635,34 +643,73 @@ def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: st
     if Path(upload_name).suffix.lower() not in ALLOWED_IMAGE_UPLOAD_EXTENSIONS:
         return _image_upload_result("failed", IMAGE_UPLOAD_FORMAT_ERROR_MESSAGE, "invalid_extension")
 
+    image_file = str(item.get("image_file") or "")
     image_dir = work_dir / "images"
-    try:
-        target_path = resolve_image_upload_target(image_dir, str(item.get("image_file") or ""))
-    except ImagePathError:
-        return _image_upload_result("failed", "画像の保存先を確認してください。", "invalid_image_file")
-    tmp_path: Path | None = None
+    runtime_tmp_path: Path | None = None
+    images_tmp_path: Path | None = None
+    candidate: ThumbnailCandidate | None = None
     total_size = 0
     try:
-        with tempfile.NamedTemporaryFile(delete=False, dir=image_dir, prefix=".upload_", suffix=".tmp") as tmp:
-            tmp_path = Path(tmp.name)
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            prefix="pef2_single_image_upload_",
+            suffix=".tmp",
+        ) as tmp:
+            runtime_tmp_path = Path(tmp.name)
             while True:
-                chunk = image_upload.stream.read(1024 * 1024)
+                chunk = image_upload.stream.read(IMAGE_UPLOAD_CHUNK_BYTES)
                 if not chunk:
                     break
                 total_size += len(chunk)
                 if total_size > IMAGE_UPLOAD_MAX_BYTES:
                     return _image_upload_result("failed", IMAGE_UPLOAD_SIZE_ERROR_MESSAGE, "too_large")
                 tmp.write(chunk)
-        if total_size == 0 or not _looks_like_allowed_image(tmp_path):
+        if total_size == 0 or not _looks_like_allowed_image(runtime_tmp_path):
             return _image_upload_result("failed", IMAGE_UPLOAD_FORMAT_ERROR_MESSAGE, "invalid_image")
-        os.replace(tmp_path, target_path)
-        tmp_path = None
+
+        try:
+            target_path = resolve_image_upload_target(image_dir, image_file)
+        except ImagePathError:
+            return _image_upload_result("failed", "画像の保存先を確認してください。", "invalid_image_file")
+
+        try:
+            candidate = build_thumbnail_candidate(
+                workspace_root,
+                work_id,
+                image_file,
+                runtime_tmp_path,
+            )
+        except Exception:
+            pass
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=image_dir,
+            prefix=".upload_",
+            suffix=".tmp",
+        ) as images_tmp:
+            images_tmp_path = Path(images_tmp.name)
+            with runtime_tmp_path.open("rb") as source:
+                shutil.copyfileobj(source, images_tmp, length=IMAGE_UPLOAD_CHUNK_BYTES)
+
+        replace_image_and_activate_thumbnail(
+            workspace_root,
+            work_id,
+            image_file,
+            images_tmp_path,
+            target_path,
+            candidate,
+        )
+        images_tmp_path = None
     finally:
-        if tmp_path is not None:
+        for temporary in (images_tmp_path, runtime_tmp_path):
+            if temporary is None:
+                continue
             try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+                temporary.unlink()
+            except OSError as error:
+                LOGGER.warning("単体画像アップロードの一時ファイルを削除できませんでした: %s", error)
+        discard_thumbnail_candidate(candidate)
 
     return _image_upload_result(
         "success",

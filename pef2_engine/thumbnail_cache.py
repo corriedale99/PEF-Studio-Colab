@@ -57,6 +57,13 @@ class ThumbnailCacheEntry:
     cache_hit: bool
 
 
+@dataclass(frozen=True)
+class ThumbnailCandidate:
+    path: Path
+    cache_key: str
+    output_format: str
+
+
 class ThumbnailSourceChangedError(RuntimeError):
     pass
 
@@ -126,6 +133,94 @@ def get_or_create_thumbnail(
                     source_metadata.cache_key,
                 )
                 raise
+
+
+def build_thumbnail_candidate(
+    workspace_root: Path,
+    work_id: str,
+    image_file: str,
+    source_path: Path,
+) -> ThumbnailCandidate:
+    normalized_image_file = normalize_image_reference(image_file)
+    cache_key = build_thumbnail_cache_key(workspace_root, work_id, normalized_image_file)
+    output_format = _output_format(normalized_image_file)
+    suffix = ".png" if output_format == "PNG" else ".jpg"
+    candidate_path: Path | None = None
+    with _image_lock(cache_key):
+        with _GENERATION_SEMAPHORE:
+            try:
+                candidate_path = _temporary_path(
+                    Path(tempfile.gettempdir()),
+                    suffix,
+                    prefix="pef2_thumbnail_candidate_",
+                )
+                _build_thumbnail_file(Path(source_path), candidate_path, output_format)
+                return ThumbnailCandidate(
+                    path=candidate_path,
+                    cache_key=cache_key,
+                    output_format=output_format,
+                )
+            except Exception as error:
+                if candidate_path is not None:
+                    _best_effort_remove(candidate_path, "thumbnail candidate")
+                LOGGER.warning(
+                    "Thumbnail candidate generation failed for cache key %s: %s",
+                    cache_key,
+                    error,
+                )
+                raise
+
+
+def replace_image_and_activate_thumbnail(
+    workspace_root: Path,
+    work_id: str,
+    image_file: str,
+    staged_image_path: Path,
+    official_image_path: Path,
+    candidate: ThumbnailCandidate | None,
+) -> bool:
+    cache_key = build_thumbnail_cache_key(workspace_root, work_id, image_file)
+    with _image_lock(cache_key):
+        os.replace(staged_image_path, official_image_path)
+        if candidate is None:
+            return False
+        try:
+            source_metadata = _source_metadata(
+                workspace_root,
+                work_id,
+                image_file,
+                official_image_path,
+            )
+            if (
+                candidate.cache_key != source_metadata.cache_key
+                or candidate.output_format != source_metadata.output_format
+            ):
+                raise ValueError("thumbnail candidate does not match the official image")
+            thumbnail_path, metadata_path = _cache_paths(
+                workspace_root,
+                work_id,
+                source_metadata.cache_key,
+                source_metadata.output_format,
+            )
+            _activate_thumbnail_candidate(
+                candidate,
+                thumbnail_path,
+                metadata_path,
+                source_metadata,
+            )
+            return True
+        except Exception:
+            LOGGER.exception(
+                "Thumbnail candidate activation failed for cache key %s",
+                cache_key,
+            )
+            return False
+
+
+def discard_thumbnail_candidate(candidate: ThumbnailCandidate | None) -> bool:
+    if candidate is None:
+        return True
+    return _best_effort_remove(candidate.path, "thumbnail candidate")
 
 
 def cleanup_work_thumbnail_cache(workspace_root: Path, work_id: str) -> bool:
@@ -281,6 +376,41 @@ def _generate_cache_entry(
                 pass
 
 
+def _activate_thumbnail_candidate(
+    candidate: ThumbnailCandidate,
+    thumbnail_path: Path,
+    metadata_path: Path,
+    source_metadata: ThumbnailSourceMetadata,
+) -> None:
+    thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+    image_tmp: Path | None = None
+    metadata_tmp: Path | None = None
+    try:
+        image_tmp = _temporary_path(thumbnail_path.parent, thumbnail_path.suffix)
+        shutil.copyfile(candidate.path, image_tmp)
+        thumbnail_bytes = image_tmp.read_bytes()
+        source_data = asdict(source_metadata)
+        metadata = {
+            "source": source_data,
+            "thumbnail_size": len(thumbnail_bytes),
+            "thumbnail_sha256": hashlib.sha256(thumbnail_bytes).hexdigest(),
+            "etag": _source_etag(source_data),
+        }
+        metadata_tmp = _temporary_path(metadata_path.parent, ".json")
+        metadata_tmp.write_text(
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(image_tmp, thumbnail_path)
+        image_tmp = None
+        os.replace(metadata_tmp, metadata_path)
+        metadata_tmp = None
+    finally:
+        for temporary in (image_tmp, metadata_tmp):
+            if temporary is not None:
+                _best_effort_remove(temporary, "thumbnail activation temporary file")
+
+
 def _build_thumbnail_file(source_path: Path, output_path: Path, output_format: str) -> None:
     with Image.open(source_path) as opened:
         image = ImageOps.exif_transpose(opened)
@@ -301,11 +431,16 @@ def _build_thumbnail_file(source_path: Path, output_path: Path, output_format: s
             image.save(output_path, format="PNG")
 
 
-def _temporary_path(directory: Path, suffix: str) -> Path:
+def _temporary_path(
+    directory: Path,
+    suffix: str,
+    *,
+    prefix: str = ".thumbnail_",
+) -> Path:
     with tempfile.NamedTemporaryFile(
         delete=False,
         dir=directory,
-        prefix=".thumbnail_",
+        prefix=prefix,
         suffix=suffix,
     ) as temporary:
         return Path(temporary.name)
