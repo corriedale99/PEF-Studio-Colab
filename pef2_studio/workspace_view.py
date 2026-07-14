@@ -39,7 +39,6 @@ from pef2_engine.image_paths import (
     image_filename,
     normalize_image_reference,
     normalize_nfc,
-    prepare_images_directory,
     resolve_existing_image,
     resolve_image_upload_target,
 )
@@ -646,8 +645,6 @@ def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: st
     image_file = str(item.get("image_file") or "")
     image_dir = work_dir / "images"
     runtime_tmp_path: Path | None = None
-    images_tmp_path: Path | None = None
-    candidate: ThumbnailCandidate | None = None
     total_size = 0
     try:
         with tempfile.NamedTemporaryFile(
@@ -672,44 +669,21 @@ def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: st
         except ImagePathError:
             return _image_upload_result("failed", "画像の保存先を確認してください。", "invalid_image_file")
 
-        try:
-            candidate = build_thumbnail_candidate(
-                workspace_root,
-                work_id,
-                image_file,
-                runtime_tmp_path,
-            )
-        except Exception:
-            pass
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            dir=image_dir,
-            prefix=".upload_",
-            suffix=".tmp",
-        ) as images_tmp:
-            images_tmp_path = Path(images_tmp.name)
-            with runtime_tmp_path.open("rb") as source:
-                shutil.copyfileobj(source, images_tmp, length=IMAGE_UPLOAD_CHUNK_BYTES)
-
-        replace_image_and_activate_thumbnail(
+        _save_validated_image_with_thumbnail(
             workspace_root,
             work_id,
             image_file,
-            images_tmp_path,
+            runtime_tmp_path,
             target_path,
-            candidate,
         )
-        images_tmp_path = None
     finally:
-        for temporary in (images_tmp_path, runtime_tmp_path):
+        for temporary in (runtime_tmp_path,):
             if temporary is None:
                 continue
             try:
                 temporary.unlink()
             except OSError as error:
                 LOGGER.warning("単体画像アップロードの一時ファイルを削除できませんでした: %s", error)
-        discard_thumbnail_candidate(candidate)
 
     return _image_upload_result(
         "success",
@@ -743,12 +717,7 @@ def save_work_bulk_image_uploads(
         )
 
     images_dir = work_dir / "images"
-    try:
-        safe_images_dir = prepare_images_directory(images_dir)
-    except ImagePathError:
-        return _bulk_image_upload_limit_result("画像の保存先を確認してください。")
-
-    stage_dir = Path(tempfile.mkdtemp(prefix=".bulk_upload_", dir=safe_images_dir))
+    stage_dir = Path(tempfile.mkdtemp(prefix="pef2_bulk_image_upload_"))
     staged: list[dict[str, Any]] = []
     total_bytes = 0
     try:
@@ -828,7 +797,7 @@ def save_work_bulk_image_uploads(
                 continue
 
             try:
-                existing = resolve_existing_image(safe_images_dir, target["image_file"])
+                existing = resolve_existing_image(images_dir, target["image_file"])
             except AmbiguousImagePathError:
                 _append_bulk_result(result, "errors", filename, "同じ名前の既存画像が複数あります。")
                 target_errors.add(normalized_filename)
@@ -843,8 +812,14 @@ def save_work_bulk_image_uploads(
                 continue
 
             try:
-                target_path = resolve_image_upload_target(safe_images_dir, target["image_file"])
-                os.replace(record["stage_path"], target_path)
+                target_path = resolve_image_upload_target(images_dir, target["image_file"])
+                _save_validated_image_with_thumbnail(
+                    workspace_root,
+                    work_id,
+                    target["image_file"],
+                    record["stage_path"],
+                    target_path,
+                )
             except AmbiguousImagePathError:
                 _append_bulk_result(result, "errors", filename, "同じ名前の既存画像が複数あります。")
                 target_errors.add(normalized_filename)
@@ -858,7 +833,7 @@ def save_work_bulk_image_uploads(
 
         for normalized_filename, target in expected_images.items():
             try:
-                existing = resolve_existing_image(safe_images_dir, target["image_file"])
+                existing = resolve_existing_image(images_dir, target["image_file"])
             except AmbiguousImagePathError:
                 if normalized_filename not in target_errors:
                     _append_bulk_result(
@@ -877,7 +852,59 @@ def save_work_bulk_image_uploads(
 
         return _finish_bulk_image_upload_result(result)
     finally:
-        shutil.rmtree(stage_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(stage_dir)
+        except OSError as error:
+            LOGGER.warning("画像一括取り込みの一時ディレクトリを削除できませんでした: %s", error)
+
+
+def _save_validated_image_with_thumbnail(
+    workspace_root: Path,
+    work_id: str,
+    image_file: str,
+    runtime_image_path: Path,
+    target_path: Path,
+) -> bool:
+    images_tmp_path: Path | None = None
+    candidate: ThumbnailCandidate | None = None
+    try:
+        try:
+            candidate = build_thumbnail_candidate(
+                workspace_root,
+                work_id,
+                image_file,
+                runtime_image_path,
+            )
+        except Exception:
+            pass
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=target_path.parent,
+            prefix=".upload_",
+            suffix=".tmp",
+        ) as images_tmp:
+            images_tmp_path = Path(images_tmp.name)
+            with runtime_image_path.open("rb") as source:
+                shutil.copyfileobj(source, images_tmp, length=IMAGE_UPLOAD_CHUNK_BYTES)
+
+        activated = replace_image_and_activate_thumbnail(
+            workspace_root,
+            work_id,
+            image_file,
+            images_tmp_path,
+            target_path,
+            candidate,
+        )
+        images_tmp_path = None
+        return activated
+    finally:
+        if images_tmp_path is not None:
+            try:
+                images_tmp_path.unlink()
+            except OSError as error:
+                LOGGER.warning("画像保存用一時ファイルを削除できませんでした: %s", error)
+        discard_thumbnail_candidate(candidate)
 
 
 def build_work_image_summary(work_dir: Path) -> dict:
