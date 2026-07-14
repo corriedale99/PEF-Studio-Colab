@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import atexit
+import logging
 import os
+import threading
 from pathlib import Path
 
 try:
@@ -78,6 +81,9 @@ from pef2_engine.generation_lock import (
 )
 from pef2_engine.thumbnail_cache import (
     THUMBNAIL_PLACEHOLDER_PNG,
+    cleanup_current_thumbnail_cache,
+    cleanup_stale_thumbnail_caches,
+    cleanup_work_thumbnail_cache,
     get_or_create_thumbnail,
 )
 from pef2_studio.generation import (
@@ -99,6 +105,12 @@ from pef2_studio.generation import (
 )
 from pef2_studio.generation_progress import is_valid_task_id
 from pef2_studio.ui_constants import SYMBOL_CATEGORY_UI
+
+
+LOGGER = logging.getLogger(__name__)
+
+_THUMBNAIL_CACHE_LIFECYCLE_LOCK = threading.Lock()
+_THUMBNAIL_CACHE_LIFECYCLE_INITIALIZED = False
 
 
 def create_app(workspace_root: Path | None = None):
@@ -176,6 +188,7 @@ def create_app(workspace_root: Path | None = None):
         selected_sort = normalize_works_sort(request.form.get("sort"))
         result = move_work_to_trash(resolved_workspace_root, work_id)
         if result.get("status") == "success":
+            _cleanup_deleted_work_thumbnail_cache(resolved_workspace_root, work_id)
             return redirect(
                 url_for("works_index", sort=selected_sort, delete_notice="deleted")
             )
@@ -1613,12 +1626,63 @@ def _delete_notice_result(delete_notice: str | None) -> dict | None:
     return None
 
 
+def initialize_thumbnail_cache_lifecycle() -> None:
+    global _THUMBNAIL_CACHE_LIFECYCLE_INITIALIZED
+    with _THUMBNAIL_CACHE_LIFECYCLE_LOCK:
+        if _THUMBNAIL_CACHE_LIFECYCLE_INITIALIZED:
+            return
+        _THUMBNAIL_CACHE_LIFECYCLE_INITIALIZED = True
+        _cleanup_stale_thumbnail_caches_on_startup()
+        try:
+            atexit.register(_cleanup_current_thumbnail_cache_on_exit)
+        except Exception as error:
+            LOGGER.warning(
+                "Could not register thumbnail cache shutdown cleanup: %s",
+                error,
+            )
+
+
+def _cleanup_stale_thumbnail_caches_on_startup() -> None:
+    try:
+        if not cleanup_stale_thumbnail_caches():
+            LOGGER.warning("Thumbnail cache startup cleanup did not complete")
+    except Exception as error:
+        LOGGER.warning("Thumbnail cache startup cleanup failed: %s", error)
+
+
+def _cleanup_current_thumbnail_cache_on_exit() -> None:
+    try:
+        if not cleanup_current_thumbnail_cache():
+            LOGGER.warning("Thumbnail cache shutdown cleanup did not complete")
+    except Exception as error:
+        LOGGER.warning("Thumbnail cache shutdown cleanup failed: %s", error)
+
+
+def _cleanup_deleted_work_thumbnail_cache(
+    workspace_root: Path,
+    work_id: str,
+) -> None:
+    try:
+        if not cleanup_work_thumbnail_cache(workspace_root, work_id):
+            LOGGER.warning(
+                "Thumbnail cache cleanup after work deletion did not complete: work_id=%s",
+                work_id,
+            )
+    except Exception as error:
+        LOGGER.warning(
+            "Thumbnail cache cleanup after work deletion failed: work_id=%s error=%s",
+            work_id,
+            error,
+        )
+
+
 def main() -> None:
     if FLASK_IMPORT_ERROR is not None:
         raise SystemExit(
             "Flask is not installed. Install Flask before running PEF Studio."
         )
     port = int(os.environ.get("PEF_STUDIO_PORT", "5000"))
+    initialize_thumbnail_cache_lifecycle()
     create_app().run(host="0.0.0.0", port=port, debug=False)
 
 
