@@ -5,6 +5,7 @@ import json
 import math
 import re
 import shutil
+import unicodedata
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +37,10 @@ IMAGE_MEDIA_TYPES = {
     ".jpeg": "image/jpeg",
 }
 CONTROL_ALLOWED = {0x09, 0x0A, 0x0D}
+
+
+class EpubImageEntryCollisionError(ValueError):
+    pass
 
 
 def generate_epub_for_work(
@@ -142,7 +147,7 @@ def _preflight(work_dir: Path, workspace_root: Path, report: dict, *, allow_miss
             epub_segments.append(epub_segment)
             image_item = epub_segment.get("image")
             if image_item and not image_item.get("missing"):
-                images[image_item["href"]] = image_item
+                _register_epub_image(images, image_item)
 
     if report["errors"]:
         return {}
@@ -185,7 +190,11 @@ def _build_epub_tmp(tmp_dir: Path, context: dict, output_name: str, report: dict
     for image in context["images"]:
         shutil.copy2(image["source"], images_dir / image["filename"])
 
-    _write_epub_zip(tmp_dir, tmp_dir / output_name)
+    _write_epub_zip(
+        tmp_dir,
+        tmp_dir / output_name,
+        {_image_zip_arcname(image["href"]) for image in context["images"]},
+    )
 
 
 def _postbuild(epub_path: Path, context: dict, report: dict) -> None:
@@ -753,13 +762,42 @@ def _content_opf(context: dict) -> str:
     return "\n".join(lines)
 
 
-def _write_epub_zip(tmp_dir: Path, epub_path: Path) -> None:
+def _write_epub_zip(
+    tmp_dir: Path,
+    epub_path: Path,
+    image_arcnames: set[str],
+) -> None:
     with zipfile.ZipFile(epub_path, "w") as archive:
         archive.write(tmp_dir / "mimetype", "mimetype", compress_type=zipfile.ZIP_STORED)
         for path in sorted(tmp_dir.rglob("*")):
             if path == epub_path or path.name == "mimetype" or path.is_dir():
                 continue
-            archive.write(path, path.relative_to(tmp_dir).as_posix(), compress_type=zipfile.ZIP_DEFLATED)
+            arcname = path.relative_to(tmp_dir).as_posix()
+            if arcname.startswith("OEBPS/images/"):
+                arcname = unicodedata.normalize("NFC", arcname)
+                if arcname not in image_arcnames:
+                    raise ValueError(f"unregistered EPUB image entry: {arcname}")
+            archive.write(path, arcname, compress_type=zipfile.ZIP_DEFLATED)
+
+
+def _register_epub_image(images: dict[str, dict], image: dict) -> None:
+    arcname = _image_zip_arcname(str(image["href"]))
+    existing = images.get(arcname)
+    if existing is None:
+        images[arcname] = image
+        return
+    existing_source = Path(existing["source"]).resolve(strict=False)
+    source = Path(image["source"]).resolve(strict=False)
+    if existing_source == source:
+        return
+    raise EpubImageEntryCollisionError(
+        f"multiple image sources map to NFC EPUB entry {arcname}: "
+        f"{existing_source} and {source}"
+    )
+
+
+def _image_zip_arcname(image_href: str) -> str:
+    return unicodedata.normalize("NFC", f"OEBPS/{image_href}")
 
 
 def _validate_opf(content_opf: str, report: dict) -> None:
