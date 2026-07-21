@@ -72,6 +72,7 @@ from pef2_engine.tts_generator import (
     VOICE_PREVIEW_FILENAME,
     WORKSPACE_TEMP_DIRNAME,
 )
+from pef2_engine.tts_settings import normalize_speed_scale
 from pef2_engine.generation_lock import (
     STALE_LOCK_CLEARED_MESSAGE,
     active_generation_lock_message,
@@ -145,16 +146,25 @@ def create_app(workspace_root: Path | None = None):
     def generate_workspace_voice_preview():
         selected_sort = normalize_works_sort(request.form.get("sort"))
         speaker_id = _form_speaker_id(request.form.get("speaker_id", ""))
-        if speaker_id is None:
+        speed_scale_selection = str(request.form.get("speed_scale") or "").strip()
+        speed_scale = normalize_speed_scale(speed_scale_selection)
+        if speaker_id is None or speed_scale is None:
             result = {
                 "status": "failed",
                 "ok": False,
-                "message": "話者IDを確認してください。",
+                "message": (
+                    "話者IDを確認してください。"
+                    if speaker_id is None
+                    else "読み上げ速度を確認してください。"
+                ),
             }
         else:
             result = run_workspace_voice_preview_generation(
-                resolved_workspace_root, speaker_id=speaker_id
+                resolved_workspace_root,
+                speaker_id=speaker_id,
+                speed_scale=speed_scale,
             )
+        result["speed_scale_selection"] = speed_scale_selection
         return _render_works_index(
             selected_sort=selected_sort,
             workspace_voice_preview_result=result,
@@ -1013,18 +1023,34 @@ def create_app(workspace_root: Path | None = None):
     @app.post("/works/<work_id>/voice-preview")
     def generate_voice_preview(work_id: str):
         speaker_id = _form_speaker_id(request.form.get("speaker_id", ""))
-        if speaker_id is None:
+        speed_scale_selection = str(request.form.get("speed_scale") or "").strip()
+        speed_scale = (
+            None
+            if speed_scale_selection == "inherit"
+            else normalize_speed_scale(speed_scale_selection)
+        )
+        if speaker_id is None or (
+            speed_scale_selection != "inherit" and speed_scale is None
+        ):
             result = {
                 "status": "failed",
                 "ok": False,
-                "message": "話者IDを確認してください。",
+                "message": (
+                    "話者IDを確認してください。"
+                    if speaker_id is None
+                    else "読み上げ速度を確認してください。"
+                ),
             }
         else:
             result = run_voice_preview_generation(
-                resolved_workspace_root, work_id, speaker_id=speaker_id
+                resolved_workspace_root,
+                work_id,
+                speaker_id=speaker_id,
+                speed_scale=speed_scale,
             )
         if result is None:
             abort(404)
+        result["speed_scale_selection"] = speed_scale_selection
         return _render_work_detail(
             work_id,
             voice_preview_result=result,

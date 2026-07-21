@@ -326,7 +326,7 @@ def _is_image_segment(segment: dict[str, Any]) -> bool:
 
 
 def _index_key(value: Any) -> str:
-    text = str(value or "").strip()
+    text = "" if value is None else str(value).strip()
     return text
 
 

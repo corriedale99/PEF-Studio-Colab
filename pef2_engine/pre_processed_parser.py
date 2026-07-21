@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 from pef2_engine.processed_builder import (
@@ -24,6 +25,45 @@ LEGACY_NUMBERED_TITLE_PATTERN = re.compile(r"^(第)?[0-9１２３４５６７８
 LEGACY_SENTENCE_SPLIT_PATTERN = re.compile(
     r"(?<=[。！？][」』）］\)])|(?<=[。！？])(?![」』）］\)])"
 )
+PLAIN_TEXT_AUDIO_SPACE_PATTERN = re.compile(r"[ \u3000]+")
+
+
+def normalize_plain_text_audio_spaces(text: str) -> str:
+    """Normalize U+0020/U+3000 separators for a new plain-text audio seed."""
+
+    def replace_space_run(match: re.Match[str]) -> str:
+        left = text[match.start() - 1] if match.start() > 0 else ""
+        right = text[match.end()] if match.end() < len(text) else ""
+        if _is_japanese_text_character(left) or _is_japanese_text_character(right):
+            return ""
+        return " "
+
+    return PLAIN_TEXT_AUDIO_SPACE_PATTERN.sub(replace_space_run, text)
+
+
+def _is_japanese_text_character(character: str) -> bool:
+    if not character:
+        return False
+    codepoint = ord(character)
+    # Kana ranges cover hiragana, full/half-width katakana, and kana extensions.
+    if (
+        0x3040 <= codepoint <= 0x30FF
+        or 0x31F0 <= codepoint <= 0x31FF
+        or 0x1AFF0 <= codepoint <= 0x1AFFF
+        or 0x1B000 <= codepoint <= 0x1B16F
+        or 0xFF66 <= codepoint <= 0xFF9F
+    ):
+        return True
+    # U+3001..U+303F contains Japanese/CJK punctuation and iteration marks;
+    # U+3000 itself is excluded because it is the separator being normalized.
+    if 0x3001 <= codepoint <= 0x303F:
+        return True
+    if character in "！？（）［］｛｝，．：；…‥—―～":
+        return True
+    name = unicodedata.name(character, "")
+    return name.startswith("CJK UNIFIED IDEOGRAPH") or name.startswith(
+        "CJK COMPATIBILITY IDEOGRAPH"
+    )
 
 
 def parse_source_file_to_pre_processed(path: Path) -> dict:
@@ -177,7 +217,7 @@ def import_plain_text_segments(text: str) -> list[dict]:
                     "source_index": line_number,
                     "block_type": "title",
                     "display": title_display,
-                    "audio_seed": title_display,
+                    "audio_seed": normalize_plain_text_audio_spaces(title_display),
                     "lower_display": "",
                     "is_image": False,
                     "image_file": "",
@@ -230,7 +270,7 @@ def split_plain_text_line_to_segments(line: str, *, source_index: int, para_star
                 "source_index": source_index,
                 "block_type": "paragraph",
                 "display": sentence,
-                "audio_seed": sentence,
+                "audio_seed": normalize_plain_text_audio_spaces(sentence),
                 "lower_display": "",
                 "is_image": False,
                 "image_file": "",

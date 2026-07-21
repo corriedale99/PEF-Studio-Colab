@@ -63,6 +63,8 @@ from pef2_engine.step5_dictionary_draft import (
     run_step5_dictionary_draft,
 )
 from pef2_engine.tts_settings import (
+    effective_tts_settings_paths,
+    normalize_speed_scale,
     read_workspace_settings,
     read_work_tts_settings,
     resolve_tts_settings,
@@ -133,6 +135,20 @@ IMAGE_UPLOAD_CHUNK_BYTES = 1024 * 1024
 IMAGE_UPLOAD_SUCCESS_MESSAGE = "画像を保存しました。変更をEPUBに反映するには、EPUB生成をやり直してください。"
 IMAGE_UPLOAD_FORMAT_ERROR_MESSAGE = "PNGまたはJPEG画像を選んでください。"
 IMAGE_UPLOAD_SIZE_ERROR_MESSAGE = "画像ファイルが大きすぎます。10MB以下の画像を選んでください。"
+SPEED_SCALE_OPTIONS = (
+    {"value": "1.0", "label": "標準速度"},
+    {"value": "0.9", "label": "少しゆっくり"},
+    {"value": "0.8", "label": "かなり丁寧"},
+    {"value": "0.7", "label": "ゆっくり"},
+    {"value": "0.65", "label": "とてもゆっくり"},
+)
+SPEED_SCALE_LABELS = {
+    1.0: "標準速度",
+    0.9: "少しゆっくり",
+    0.8: "かなり丁寧",
+    0.7: "ゆっくり",
+    0.65: "とてもゆっくり",
+}
 
 
 class _BulkUploadTotalLimitExceeded(Exception):
@@ -231,6 +247,13 @@ def save_workspace_tts_settings_submission(workspace_root: Path, form_data) -> d
             "message": "話者IDを確認してください。",
             "errors": ["話者IDを確認してください。"],
         }
+    speed_scale = normalize_speed_scale(form_data.get("speed_scale"))
+    if speed_scale is None:
+        return {
+            "status": "failed",
+            "message": "読み上げ速度を確認してください。",
+            "errors": ["読み上げ速度を確認してください。"],
+        }
     breath_settings = _parse_breath_settings(
         form_data,
         resolve_tts_settings(workspace_root)["breath"],
@@ -245,23 +268,31 @@ def save_workspace_tts_settings_submission(workspace_root: Path, form_data) -> d
     existing = read_workspace_settings(workspace_root)
     tts = existing.get("tts") if isinstance(existing.get("tts"), dict) else {}
     voice = tts.get("voice") if isinstance(tts.get("voice"), dict) else {}
-    tts["voice"] = {**voice, "speaker_id": speaker_id}
+    tts["voice"] = {
+        **voice,
+        "speaker_id": speaker_id,
+        "speed_scale": speed_scale,
+    }
     tts["breath"] = breath_settings
     write_workspace_settings(workspace_root, tts)
     return {
         "status": "success",
         "message": "全体設定を保存しました。作品別設定がない作品では、この設定が使われます。",
         "speaker_id": speaker_id,
+        "speed_scale": speed_scale,
     }
 
 
 def build_workspace_tts_settings_view(workspace_root: Path) -> dict:
     resolved = resolve_tts_settings(workspace_root)
+    speed_scale = resolved["voice"]["speed_scale"]
     preview_path = Path(workspace_root) / WORKSPACE_TEMP_DIRNAME / VOICE_PREVIEW_FILENAME
     preview_exists = preview_path.is_file()
     return {
         "speaker_id": resolved["voice"]["speaker_id"],
         "backend": resolved["voice"]["backend"],
+        "speed_scale": _speed_scale_form_value(speed_scale),
+        "speed_scale_options": _speed_scale_options(speed_scale),
         "choking_threshold": resolved["breath"]["choking_threshold"],
         "distance_threshold": resolved["breath"]["distance_threshold"],
         "has_workspace_settings": workspace_settings_path(workspace_root).exists(),
@@ -429,6 +460,16 @@ def save_work_tts_settings_submission(workspace_root: Path, work_id: str, form_d
             "message": "話者IDを確認してください。",
             "errors": ["話者IDを確認してください。"],
         }
+    speed_scale_selection = str(form_data.get("speed_scale") or "").strip()
+    speed_scale = None
+    if speed_scale_selection != "inherit":
+        speed_scale = normalize_speed_scale(speed_scale_selection)
+        if speed_scale is None:
+            return {
+                "status": "failed",
+                "message": "読み上げ速度を確認してください。",
+                "errors": ["読み上げ速度を確認してください。"],
+            }
     breath_settings = _parse_breath_settings(
         form_data,
         resolve_tts_settings(workspace_root, work_dir)["breath"],
@@ -442,13 +483,20 @@ def save_work_tts_settings_submission(workspace_root: Path, work_id: str, form_d
 
     existing = read_work_tts_settings(work_dir)
     voice = existing.get("voice") if isinstance(existing.get("voice"), dict) else {}
-    existing["voice"] = {**voice, "speaker_id": speaker_id}
+    voice = {**voice, "speaker_id": speaker_id}
+    if speed_scale_selection == "inherit":
+        voice.pop("speed_scale", None)
+    else:
+        voice["speed_scale"] = speed_scale
+    existing["voice"] = voice
     existing["breath"] = breath_settings
     write_work_tts_settings(work_dir, existing)
     return {
         "status": "success",
         "message": "音声設定を保存しました。変更を反映するには、EPUB生成をやり直してください。",
         "speaker_id": speaker_id,
+        "speed_scale": speed_scale,
+        "speed_scale_selection": speed_scale_selection,
     }
 
 
@@ -523,7 +571,7 @@ def save_work_image_alt_review_submission(
         "success",
         "画像代替テキストを保存しました。",
         "saved",
-        segment_index=str(target.get("segment_index") or ""),
+        segment_index=_image_index_text(target.get("segment_index")),
         image_file=str(target.get("image_path") or ""),
     )
 
@@ -594,7 +642,7 @@ def save_work_image_alt_target_submission(
         "success",
         "画像代替テキストを保存しました。",
         "saved",
-        segment_index=str(target.get("segment_index") or ""),
+        segment_index=_image_index_text(target.get("segment_index")),
         image_file=str(target.get("image_path") or ""),
     )
 
@@ -689,7 +737,7 @@ def save_work_image_upload(workspace_root: Path, work_id: str, segment_index: st
         "success",
         IMAGE_UPLOAD_SUCCESS_MESSAGE,
         "saved",
-        segment_index=str(item.get("index") or ""),
+        segment_index=_image_index_text(item.get("index")),
         image_file=str(item.get("image_file") or ""),
     )
 
@@ -1024,9 +1072,13 @@ def _selected_image_alt_item(items: list[dict], selected_segment_index: str | No
     if selected_segment_index:
         target = str(selected_segment_index)
         for item in items:
-            if str(item.get("segment_index") or "") == target:
+            if _image_index_text(item.get("segment_index")) == target:
                 return item
     return items[0] if items else None
+
+
+def _image_index_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
 
 
 def _image_alt_summary(items: list[dict], review: dict) -> dict:
@@ -1080,7 +1132,7 @@ def _image_alt_status_class(status: str) -> str:
 def _image_alt_item_by_index(review: dict, segment_index: str) -> dict | None:
     target_index = str(segment_index)
     for item in review.get("items") or []:
-        if str(item.get("segment_index") or "") == target_index:
+        if _image_index_text(item.get("segment_index")) == target_index:
             return item
     return None
 
@@ -1147,7 +1199,7 @@ def resolve_work_image_source(
         return None
     target_index = str(segment_index)
     for segment in _processed_segments(processed_data):
-        if not _is_image_segment(segment) or str(segment.get("index") or "") != target_index:
+        if not _is_image_segment(segment) or _image_index_text(segment.get("index")) != target_index:
             continue
         items = build_image_items(work_dir, {"segments": [segment]})
         item = items[0] if items else None
@@ -1178,6 +1230,14 @@ def _image_epub_needs_regeneration(work_dir: Path, image_items: list[dict]) -> b
 
 def build_tts_settings_view(workspace_root: Path, work_dir: Path) -> dict:
     resolved = resolve_tts_settings(workspace_root, work_dir)
+    workspace_resolved = resolve_tts_settings(workspace_root)
+    work_settings = read_work_tts_settings(work_dir)
+    work_voice = (
+        work_settings.get("voice")
+        if isinstance(work_settings.get("voice"), dict)
+        else {}
+    )
+    work_speed_scale = normalize_speed_scale(work_voice.get("speed_scale"))
     work_settings_exists = work_tts_settings_path(work_dir).exists()
     workspace_settings_exists = workspace_settings_path(workspace_root).exists()
     preview_path = work_dir / "audio" / VOICE_PREVIEW_DIRNAME / VOICE_PREVIEW_FILENAME
@@ -1190,6 +1250,16 @@ def build_tts_settings_view(workspace_root: Path, work_dir: Path) -> dict:
     return {
         "speaker_id": resolved["voice"]["speaker_id"],
         "backend": resolved["voice"]["backend"],
+        "speed_scale": (
+            _speed_scale_form_value(work_speed_scale)
+            if work_speed_scale is not None
+            else "inherit"
+        ),
+        "effective_speed_scale": resolved["voice"]["speed_scale"],
+        "workspace_speed_scale_label": _speed_scale_label(
+            workspace_resolved["voice"]["speed_scale"]
+        ),
+        "speed_scale_options": _speed_scale_options(work_speed_scale),
         "choking_threshold": resolved["breath"]["choking_threshold"],
         "distance_threshold": resolved["breath"]["distance_threshold"],
         "source_label": source_label,
@@ -1207,6 +1277,31 @@ def _parse_speaker_id(value: object) -> int | None:
         return None
     speaker_id = int(text)
     return speaker_id if speaker_id >= 0 else None
+
+
+def _speed_scale_form_value(value: object) -> str:
+    speed_scale = normalize_speed_scale(value)
+    return "1.0" if speed_scale is None else str(speed_scale)
+
+
+def _speed_scale_label(value: object) -> str:
+    speed_scale = normalize_speed_scale(value)
+    if speed_scale is None:
+        return SPEED_SCALE_LABELS[1.0]
+    return SPEED_SCALE_LABELS.get(speed_scale, f"設定値 {_speed_scale_form_value(speed_scale)}")
+
+
+def _speed_scale_options(value: object) -> tuple[dict[str, str], ...]:
+    speed_scale = normalize_speed_scale(value)
+    options = [dict(option) for option in SPEED_SCALE_OPTIONS]
+    if speed_scale is None:
+        return tuple(options)
+    form_value = _speed_scale_form_value(speed_scale)
+    if all(option["value"] != form_value for option in options):
+        options.append(
+            {"value": form_value, "label": f"現在の設定（{form_value}）"}
+        )
+    return tuple(options)
 
 
 def _parse_breath_settings(form_data, fallback: dict) -> dict | None:
@@ -1379,8 +1474,9 @@ def import_text_upload(
         source_original_path = temp_dir_path / workspace_paths.SOURCE_ORIGINAL_FILENAME
 
         txt_bytes = _upload_bytes(txt_upload)
-        txt_path.write_bytes(txt_bytes)
-        source_original_path.write_bytes(txt_bytes)
+        normalized_txt_bytes = _decode_text_upload_bytes(txt_bytes).encode("utf-8")
+        txt_path.write_bytes(normalized_txt_bytes)
+        source_original_path.write_bytes(normalized_txt_bytes)
 
         pre_processed = parse_source_file_to_pre_processed(txt_path)
         write_json(workspace_paths.pre_processed_path(temp_dir_path), pre_processed)
@@ -2708,14 +2804,17 @@ def _audio_needs_regeneration(workspace_root: Path, work_dir: Path) -> bool:
         final_mtime = final_path.stat().st_mtime
         audio_mtime = audio_path.stat().st_mtime
         sync_mtime = sync_path.stat().st_mtime
-        settings_path = _effective_tts_settings_path(workspace_root, work_dir)
-        settings_mtime = settings_path.stat().st_mtime if settings_path is not None else None
+        settings_mtimes = [
+            path.stat().st_mtime
+            for path in effective_tts_settings_paths(workspace_root, work_dir)
+        ]
     except OSError:
         return True
     if final_mtime > audio_mtime or final_mtime > sync_mtime:
         return True
-    if settings_mtime is not None and (
+    if any(
         settings_mtime > audio_mtime or settings_mtime > sync_mtime
+        for settings_mtime in settings_mtimes
     ):
         return True
     return False
@@ -2737,9 +2836,7 @@ def _has_current_epub(workspace_root: Path, work_dir: Path) -> bool:
             work_dir / "audio" / "audio.mp3",
             work_dir / "audio" / "sync_map.json",
         ]
-        settings_path = _effective_tts_settings_path(workspace_root, work_dir)
-        if settings_path is not None:
-            required_paths.append(settings_path)
+        required_paths.extend(effective_tts_settings_paths(workspace_root, work_dir))
         final_data = read_json(final_path)
         required_paths.extend(
             item["path"]
@@ -2758,8 +2855,8 @@ def _epub_needs_regeneration(workspace_root: Path, work_dir: Path) -> bool:
 
 
 def _tts_settings_newer_than_outputs(workspace_root: Path, work_dir: Path) -> bool:
-    settings_path = _effective_tts_settings_path(workspace_root, work_dir)
-    if settings_path is None:
+    settings_paths = effective_tts_settings_paths(workspace_root, work_dir)
+    if not settings_paths:
         return False
     output_paths = [
         work_dir / "audio" / "audio.mp3",
@@ -2769,20 +2866,14 @@ def _tts_settings_newer_than_outputs(workspace_root: Path, work_dir: Path) -> bo
     if latest_epub is not None:
         output_paths.append(latest_epub)
     try:
-        settings_mtime = settings_path.stat().st_mtime
-        return any(path.is_file() and settings_mtime > path.stat().st_mtime for path in output_paths)
+        return any(
+            output_path.is_file()
+            and settings_path.stat().st_mtime > output_path.stat().st_mtime
+            for settings_path in settings_paths
+            for output_path in output_paths
+        )
     except OSError:
         return False
-
-
-def _effective_tts_settings_path(workspace_root: Path, work_dir: Path) -> Path | None:
-    work_settings = work_tts_settings_path(work_dir)
-    if work_settings.is_file():
-        return work_settings
-    workspace_settings = workspace_settings_path(workspace_root)
-    if workspace_settings.is_file():
-        return workspace_settings
-    return None
 
 
 def _active_generation_lock_info(work_dir: Path) -> dict:
@@ -2922,7 +3013,7 @@ def _image_item_by_index(work_dir: Path, segment_index: str) -> dict | None:
     summary = build_work_image_summary(work_dir)
     target_index = str(segment_index)
     for item in summary["items"]:
-        if str(item.get("index") or "") == target_index:
+        if _image_index_text(item.get("index")) == target_index:
             return item
     return None
 
@@ -3804,6 +3895,26 @@ def _upload_bytes(upload) -> bytes:
     data = stream.read()
     stream.seek(0)
     return data
+
+
+def _decode_text_upload_bytes(payload: bytes) -> str:
+    if payload.startswith(b"\xef\xbb\xbf"):
+        return payload.decode("utf-8-sig")
+    if payload.startswith((b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")):
+        raise UnicodeDecodeError(
+            "utf-8",
+            payload,
+            0,
+            min(len(payload), 4),
+            "UTF-16/32 BOM is not supported",
+        )
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as utf8_error:
+        try:
+            return payload.decode("cp932")
+        except UnicodeDecodeError:
+            raise utf8_error
 
 
 def _legacy_dictionary_import_error_message(

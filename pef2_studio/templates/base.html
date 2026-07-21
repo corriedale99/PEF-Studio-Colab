@@ -6,7 +6,7 @@
     <title>{% block title %}PEFスタジオ{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='studio.css') }}">
   </head>
-  <body>
+  <body class="{{ page_role | default('page-role--hub') }}">
     <header class="topbar">
       <a class="brand" href="{{ url_for('works_index') }}">PEFスタジオ 作品一覧</a>
       {% block topbar_workflow %}{% endblock %}

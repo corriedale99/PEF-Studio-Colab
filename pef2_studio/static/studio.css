@@ -4,6 +4,7 @@
 
 :root {
   --color-page: #eef8ff;
+  --color-page-work: #faf7f0;
   --color-surface: #fff;
   --color-surface-subtle: #f8fafc;
   --color-text: #1f2937;
@@ -36,6 +37,10 @@ body {
   color: var(--color-text);
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
   line-height: 1.6;
+}
+
+body.page-role--work {
+  background: var(--color-page-work);
 }
 
 .topbar {
@@ -1353,11 +1358,40 @@ textarea[readonly] {
   line-height: 1.5;
 }
 
+.voice-speed-field {
+  display: grid;
+  gap: 8px;
+  max-width: 260px;
+}
+
+.voice-speed-field span {
+  color: #344054;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.voice-speed-field select {
+  min-height: 42px;
+  padding: 8px 34px 8px 11px;
+  border: 1px solid #b8c4d2;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-control);
+  font: inherit;
+}
+
 .voice-preview-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+
+.voice-preview-controls .voice-speed-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: none;
 }
 
 .voice-preview-controls .speaker-id-input {
@@ -1374,7 +1408,7 @@ textarea[readonly] {
 
 .voice-preview-playback {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
 }

@@ -16,7 +16,12 @@ from typing import Any, Callable, Protocol
 
 from pef2_engine import workspace_paths
 from pef2_engine.io_utils import read_json, write_json
-from pef2_engine.tts_settings import resolve_tts_settings, resolve_tts_settings_with_sources
+from pef2_engine.tts_settings import (
+    DEFAULT_SPEED_SCALE,
+    normalize_speed_scale,
+    resolve_tts_settings,
+    resolve_tts_settings_with_sources,
+)
 from pef2_engine.tts_pre_transform import SILENCE, run_tts_pre_transform
 
 
@@ -54,6 +59,7 @@ TTS_RETRY = {
 VOICEVOX_CONFIG = {
     "url": "http://localhost:50021",
     "speaker_id": 13,
+    "speed_scale": DEFAULT_SPEED_SCALE,
     "audio_query_timeout": 30,
     "synthesis_timeout": 60,
 }
@@ -226,10 +232,15 @@ def create_backend(
     *,
     tts_settings: dict | None = None,
     speaker_id: int | str | None = None,
+    speed_scale: float | str | None = None,
 ) -> TTSBackend:
     name = _normalize_backend_name(backend_name)
     if name == "VOICEVOX":
-        return VoicevoxBackend.from_environment(tts_settings=tts_settings, speaker_id=speaker_id)
+        return VoicevoxBackend.from_environment(
+            tts_settings=tts_settings,
+            speaker_id=speaker_id,
+            speed_scale=speed_scale,
+        )
     if name == "GCS":
         return GcsBackend.from_environment()
     raise ValueError(f"unsupported backend: {backend_name}")
@@ -240,6 +251,7 @@ def generate_voice_preview_for_work(
     workspace_root: Path | None = None,
     *,
     speaker_id: int | str | None = None,
+    speed_scale: float | str | None = None,
     now: datetime | None = None,
 ) -> dict:
     work_dir = Path(work_dir)
@@ -250,6 +262,7 @@ def generate_voice_preview_for_work(
         preview_dir,
         tts_settings=tts_settings,
         speaker_id=speaker_id,
+        speed_scale=speed_scale,
         work_id=work_dir.name,
         audio_file=str(Path("audio") / VOICE_PREVIEW_DIRNAME / VOICE_PREVIEW_FILENAME),
         now=now,
@@ -260,6 +273,7 @@ def generate_workspace_voice_preview(
     workspace_root: Path,
     *,
     speaker_id: int | str | None = None,
+    speed_scale: float | str | None = None,
     now: datetime | None = None,
 ) -> dict:
     workspace_root = Path(workspace_root)
@@ -267,6 +281,7 @@ def generate_workspace_voice_preview(
         workspace_root / WORKSPACE_TEMP_DIRNAME,
         tts_settings=resolve_tts_settings(workspace_root),
         speaker_id=speaker_id,
+        speed_scale=speed_scale,
         work_id="workspace",
         audio_file=str(Path(WORKSPACE_TEMP_DIRNAME) / VOICE_PREVIEW_FILENAME),
         now=now,
@@ -278,6 +293,7 @@ def generate_voice_preview(
     *,
     tts_settings: dict,
     speaker_id: int | str | None,
+    speed_scale: float | str | None,
     work_id: str,
     audio_file: str,
     now: datetime | None = None,
@@ -290,6 +306,7 @@ def generate_voice_preview(
         "ok": False,
         "backend": "VOICEVOX",
         "speaker_id": None,
+        "speed_scale": None,
         "preview_text": VOICE_PREVIEW_TEXT,
         "audio_file": audio_file,
         "errors": [],
@@ -299,8 +316,13 @@ def generate_voice_preview(
     preview_dir.mkdir(parents=True, exist_ok=True)
     try:
         tmp_dir.mkdir(parents=True, exist_ok=False)
-        backend = VoicevoxBackend.from_environment(tts_settings=tts_settings, speaker_id=speaker_id)
+        backend = VoicevoxBackend.from_environment(
+            tts_settings=tts_settings,
+            speaker_id=speaker_id,
+            speed_scale=speed_scale,
+        )
         report["speaker_id"] = int(backend.speaker_id)
+        report["speed_scale"] = float(backend.speed_scale)
         preview_wav = tmp_dir / "voice_preview.wav"
         preview_mp3 = tmp_dir / VOICE_PREVIEW_FILENAME
         backend.synthesize_to_wav(VOICE_PREVIEW_TEXT, preview_wav)
@@ -330,6 +352,9 @@ class VoicevoxBackend:
             resolved.update(config)
         self.url = str(resolved["url"]).rstrip("/")
         self.speaker_id = int(resolved["speaker_id"])
+        self.speed_scale = normalize_speed_scale(resolved.get("speed_scale"))
+        if self.speed_scale is None:
+            self.speed_scale = DEFAULT_SPEED_SCALE
         self.audio_query_timeout = float(resolved["audio_query_timeout"])
         self.synthesis_timeout = float(resolved["synthesis_timeout"])
         retry = TTS_RETRY["VOICEVOX"]
@@ -342,6 +367,7 @@ class VoicevoxBackend:
         *,
         tts_settings: dict | None = None,
         speaker_id: int | str | None = None,
+        speed_scale: float | str | None = None,
     ) -> "VoicevoxBackend":
         voice_settings = {}
         if isinstance(tts_settings, dict) and isinstance(tts_settings.get("voice"), dict):
@@ -349,12 +375,15 @@ class VoicevoxBackend:
         config = {
             "url": os.environ.get("VOICEVOX_URL", VOICEVOX_CONFIG["url"]),
             "speaker_id": voice_settings.get("speaker_id", VOICEVOX_CONFIG["speaker_id"]),
+            "speed_scale": voice_settings.get("speed_scale", VOICEVOX_CONFIG["speed_scale"]),
         }
         env_speaker_id = os.environ.get("VOICEVOX_SPEAKER_ID", os.environ.get("SPEAKER_ID"))
         if env_speaker_id is not None and env_speaker_id.strip():
             config["speaker_id"] = env_speaker_id
         if speaker_id is not None and str(speaker_id).strip():
             config["speaker_id"] = speaker_id
+        if speed_scale is not None and str(speed_scale).strip():
+            config["speed_scale"] = speed_scale
         return cls(config)
 
     def synthesize_to_wav(self, text: str, output_path: Path) -> None:
@@ -362,6 +391,7 @@ class VoicevoxBackend:
         for attempt in range(1, self.max_retries + 1):
             try:
                 query = self._audio_query(text)
+                query["speedScale"] = self.speed_scale
                 wav_bytes = self._synthesis(query)
                 if not wav_bytes:
                     raise RuntimeError("VOICEVOX synthesis returned empty content")
@@ -817,6 +847,9 @@ def _record_backend_settings(report: dict, backend: TTSBackend) -> None:
         speaker_id = getattr(backend, "speaker_id", None)
         if speaker_id is not None:
             report["speaker_id"] = int(speaker_id)
+        speed_scale = getattr(backend, "speed_scale", None)
+        if speed_scale is not None:
+            report["speed_scale"] = float(speed_scale)
     elif report.get("backend") == "GCS":
         config = getattr(backend, "config", {})
         if isinstance(config, dict):
@@ -834,6 +867,8 @@ def _record_effective_tts_settings(report: dict) -> None:
     voice["backend"] = report.get("backend")
     if report.get("speaker_id") is not None:
         voice["speaker_id"] = report.get("speaker_id")
+    if report.get("speed_scale") is not None:
+        voice["speed_scale"] = report.get("speed_scale")
 
 
 def _ordered_tts_units(tts_units: list[dict]) -> list[dict]:
@@ -866,6 +901,7 @@ def _new_report(work_dir: Path, backend_name: str) -> dict:
         "ok": False,
         "backend": backend_name,
         "speaker_id": None,
+        "speed_scale": None,
         "voice_name": None,
         "language_code": None,
         "source_file": workspace_paths.PROCESSED_FINAL_FILENAME,

@@ -1,3 +1,3 @@
 # version.py
-DESCRIPTION = "v1.6-7sub3-99画像サムネイル実装バグ修正"
-VERSION = "v1.6-7sub3-99"
+DESCRIPTION = "v1.7-2sub2-背景色の変更"
+VERSION = "v1.7-2sub2"

@@ -24,9 +24,8 @@ from pef2_engine.tts_generator import (
     generate_tts_for_work,
 )
 from pef2_engine.tts_settings import (
+    effective_tts_settings_paths,
     resolve_tts_settings,
-    work_tts_settings_path,
-    workspace_settings_path,
 )
 from pef2_studio.generation_progress import (
     PROGRESS_DIRNAME,
@@ -1062,7 +1061,13 @@ def _next_action_phase(next_action_status: str) -> str:
     return "EPUB生成失敗"
 
 
-def run_voice_preview_generation(workspace_root: Path, work_id: str, *, speaker_id: int | str | None = None) -> dict | None:
+def run_voice_preview_generation(
+    workspace_root: Path,
+    work_id: str,
+    *,
+    speaker_id: int | str | None = None,
+    speed_scale: float | str | None = None,
+) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
     if work_dir is None:
         return None
@@ -1071,14 +1076,28 @@ def run_voice_preview_generation(workspace_root: Path, work_id: str, *, speaker_
         work_dir,
         workspace_root,
         speaker_id=speaker_id if speaker_id is not None else _studio_speaker_id(workspace_root, work_dir),
+        speed_scale=(
+            speed_scale
+            if speed_scale is not None
+            else resolve_tts_settings(workspace_root, work_dir)["voice"]["speed_scale"]
+        ),
     )
     output_path = work_dir / "audio" / VOICE_PREVIEW_DIRNAME / VOICE_PREVIEW_FILENAME
     return _voice_preview_result(report, output_path, work_dir.name)
 
 
-def run_workspace_voice_preview_generation(workspace_root: Path, *, speaker_id: int | str | None = None) -> dict:
+def run_workspace_voice_preview_generation(
+    workspace_root: Path,
+    *,
+    speaker_id: int | str | None = None,
+    speed_scale: float | str | None = None,
+) -> dict:
     workspace_root = Path(workspace_root)
-    report = generate_workspace_voice_preview(workspace_root, speaker_id=speaker_id)
+    report = generate_workspace_voice_preview(
+        workspace_root,
+        speaker_id=speaker_id,
+        speed_scale=speed_scale,
+    )
     output_path = workspace_root / WORKSPACE_TEMP_DIRNAME / VOICE_PREVIEW_FILENAME
     return _voice_preview_result(report, output_path, "workspace")
 
@@ -1090,6 +1109,7 @@ def _voice_preview_result(report: dict, output_path: Path, work_id: str) -> dict
             "ok": True,
             "message": "試聴音声を生成しました。",
             "speaker_id": report.get("speaker_id"),
+            "speed_scale": report.get("speed_scale"),
             "output_path": _rel_path(output_path),
             "dev_log": _report_summary_lines(report),
             "work_id": work_id,
@@ -1103,6 +1123,7 @@ def _voice_preview_result(report: dict, output_path: Path, work_id: str) -> dict
             else "試聴音声の生成に失敗しました。"
         ),
         "speaker_id": report.get("speaker_id"),
+        "speed_scale": report.get("speed_scale"),
         "output_path": "",
         "dev_log": _report_error_lines(report),
         "work_id": work_id,
@@ -1278,14 +1299,17 @@ def _audio_needs_regeneration(
         final_mtime = final_path.stat().st_mtime
         audio_mtime = audio_path.stat().st_mtime
         sync_mtime = sync_path.stat().st_mtime
-        settings_path = _effective_tts_settings_path(workspace_root, work_dir)
-        settings_mtime = settings_path.stat().st_mtime if settings_path is not None else None
+        settings_mtimes = [
+            path.stat().st_mtime
+            for path in effective_tts_settings_paths(workspace_root, work_dir)
+        ]
     except OSError:
         return True
     if final_mtime > audio_mtime or final_mtime > sync_mtime:
         return True
-    if settings_mtime is not None and (
+    if any(
         settings_mtime > audio_mtime or settings_mtime > sync_mtime
+        for settings_mtime in settings_mtimes
     ):
         return True
     return False
@@ -1293,17 +1317,6 @@ def _audio_needs_regeneration(
 
 def _studio_speaker_id(workspace_root: Path, work_dir: Path) -> int:
     return int(resolve_tts_settings(workspace_root, work_dir)["voice"]["speaker_id"])
-
-
-def _effective_tts_settings_path(workspace_root: Path, work_dir: Path) -> Path | None:
-    work_settings = work_tts_settings_path(work_dir)
-    if work_settings.is_file():
-        return work_settings
-    workspace_settings = workspace_settings_path(workspace_root)
-    if workspace_settings.is_file():
-        return workspace_settings
-    return None
-
 
 def _epub_completed(work_dir: Path, report: dict, report_path: Path) -> bool:
     if not (report.get("ok") and report.get("committed")):

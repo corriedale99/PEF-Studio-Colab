@@ -1,3 +1,4 @@
+{% set page_role = "page-role--hub" %}
 {% extends "base.html" %}
 {% block title %}作品一覧 - PEFスタジオ{% endblock %}
 {% block content %}
@@ -66,6 +67,7 @@
     {% endif %}
     <form class="inline-form" method="post" action="{{ url_for('save_workspace_tts_settings') }}#workspace-settings" data-busy-message="処理中です。しばらくお待ちください。">
       {% set workspace_speaker_id = workspace_voice_preview_result.speaker_id if workspace_voice_preview_result is defined and workspace_voice_preview_result and workspace_voice_preview_result.speaker_id is not none else workspace_tts_settings.speaker_id %}
+      {% set workspace_speed_scale = workspace_voice_preview_result.speed_scale_selection if workspace_voice_preview_result is defined and workspace_voice_preview_result and workspace_voice_preview_result.speed_scale_selection else workspace_tts_settings.speed_scale %}
       <input type="hidden" name="sort" value="{{ selected_sort }}">
       <div class="settings-category">
         <h3>🔈 声のキャラ</h3>
@@ -74,10 +76,20 @@
           <label class="voice-preview-field-label" for="workspace-speaker-id">声のキャラID</label>
           <div class="voice-preview-controls">
             <input id="workspace-speaker-id" class="speaker-id-input" type="number" name="speaker_id" min="0" step="1" value="{{ workspace_speaker_id }}">
+            <label class="voice-speed-field" for="workspace-speed-scale">
+              <span>読み上げ速度</span>
+              <select id="workspace-speed-scale" name="speed_scale">
+                {% for option in workspace_tts_settings.speed_scale_options %}
+                  <option value="{{ option.value }}"{% if option.value == workspace_speed_scale %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
             <button class="secondary-button" type="submit" formaction="{{ url_for('generate_workspace_voice_preview') }}#workspace-settings" data-busy-keep-label="1">試聴する</button>
             {% if workspace_tts_settings.has_voice_preview %}
-              <span class="voice-preview-inline-label">再生する</span>
-              <audio controls src="{{ url_for('workspace_voice_preview_audio', v=workspace_tts_settings.voice_preview_version) }}"></audio>
+              <div class="voice-preview-playback">
+                <span class="voice-preview-inline-label">再生</span>
+                <audio controls src="{{ url_for('workspace_voice_preview_audio', v=workspace_tts_settings.voice_preview_version) }}"></audio>
+              </div>
             {% endif %}
           </div>
         </div>
