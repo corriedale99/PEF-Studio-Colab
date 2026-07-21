@@ -1885,10 +1885,10 @@ def _ai_dictionary_review_failed_result(step5_result: dict, status: str) -> dict
     if status == "missing_api_key":
         result = _dictionary_review_result(
             "failed",
-            "AIの準備ができていないため、辞書候補を作成できませんでした。",
+            "AI機能を使うには、AI APIキーの設定が必要です。",
             failed_stage="step5_dictionary_draft",
             error_type="missing_api_key",
-            error_message="GEMINI_API_KEY が設定されていません。.env または環境変数に GEMINI_API_KEY を設定してください。",
+            error_message="AI機能を使うには、AI APIキーの設定が必要です。",
             affected_file=workspace_paths.WORK_DICTIONARY_DRAFT_FILENAME,
             committed=False,
             meta_status_changed=False,

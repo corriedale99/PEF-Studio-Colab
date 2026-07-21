@@ -87,7 +87,7 @@ def run_image_alt_generation(
 
     api_key = _load_api_key(project_root)
     if not api_key:
-        message = "GEMINI_API_KEY が設定されていません。"
+        message = "AI機能を使うには、AI APIキーの設定が必要です。"
         _mark_targets_error(work_dir, targets, message)
         result["message"] = message
         result["failed_count"] = len(targets)
