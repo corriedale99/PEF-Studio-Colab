@@ -144,11 +144,11 @@ def select_image_alt_generation_targets(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     targets: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    requested = str(segment_index or "").strip()
+    requested = _segment_index_text(segment_index)
     for item in review.get("items") or []:
         if not isinstance(item, dict):
             continue
-        item_index = str(item.get("segment_index") or "")
+        item_index = _segment_index_text(item.get("segment_index"))
         if requested and item_index != requested:
             continue
         if not requested and item.get("send_to_ai") is not True:
@@ -303,15 +303,19 @@ def _update_item_error(work_dir: Path, segment_index: str, message: str) -> None
 
 def _mark_targets_error(work_dir: Path, targets: list[dict[str, Any]], message: str) -> None:
     for target in targets:
-        _update_item_error(work_dir, str(target.get("segment_index") or ""), message)
+        _update_item_error(work_dir, _segment_index_text(target.get("segment_index")), message)
 
 
 def _item_by_segment_index(review: dict[str, Any], segment_index: str) -> dict[str, Any] | None:
-    target = str(segment_index or "")
+    target = _segment_index_text(segment_index)
     for item in review.get("items") or []:
-        if isinstance(item, dict) and str(item.get("segment_index") or "") == target:
+        if isinstance(item, dict) and _segment_index_text(item.get("segment_index")) == target:
             return item
     return None
+
+
+def _segment_index_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
 
 
 def _item_image_path(work_dir: Path, item: dict[str, Any]) -> Path | None:
