@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 
 from pef2_engine.dictionary_loader import first_value
+from version import DESCRIPTION, VERSION
 
 
 SCHEMA_VERSION = "dictionary_review-1"
@@ -118,6 +119,8 @@ def build_dictionary_review_from_legacy_dictionary(
     return (
         {
             "schema_version": SCHEMA_VERSION,
+            "version": VERSION,
+            "description": DESCRIPTION,
             "source": SOURCE,
             "input_stem": input_stem or "unknown",
             "generated_from": generated_from,

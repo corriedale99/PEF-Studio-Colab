@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -23,12 +24,17 @@ from pef2_engine.tts_settings import (
     resolve_tts_settings_with_sources,
 )
 from pef2_engine.tts_pre_transform import SILENCE, run_tts_pre_transform
+from pef2_engine.workspace_cleanup import (
+    cleanup_preview_failures,
+    prune_timestamped_backup_files,
+)
+from version import DESCRIPTION, VERSION
 
 
 TTS_BUILD_REPORT_SCHEMA_VERSION = "tts-build-report-1"
 SYNC_MAP_SCHEMA_VERSION = "sync-map-1"
 TTS_BACKEND_DEFAULT = "VOICEVOX"
-AUDIO_BACKUP_KEEP = 2
+AUDIO_BACKUP_KEEP = 1
 SYNC_DURATION_TOLERANCE_SECONDS = 0.25
 FFMPEG_BIN_ENV = "FFMPEG_BIN"
 FFMPEG_BIN_DEFAULT = "ffmpeg"
@@ -41,6 +47,8 @@ VOICE_PREVIEW_TEXT = "読み上げの声を確認します。"
 VOICE_PREVIEW_DIRNAME = "preview"
 VOICE_PREVIEW_FILENAME = "voice_preview.mp3"
 WORKSPACE_TEMP_DIRNAME = "_temp_"
+
+LOGGER = logging.getLogger(__name__)
 
 TTS_RETRY = {
     "VOICEVOX": {
@@ -341,6 +349,10 @@ def generate_voice_preview(
             shutil.move(str(tmp_dir), failed_dir)
             report["failed_build_dir"] = str(failed_dir)
         return report
+    finally:
+        cleanup_result = cleanup_preview_failures(preview_dir, now=now)
+        for cleanup_error in cleanup_result.get("errors", []):
+            LOGGER.warning("voice preview cleanup failed: %s", cleanup_error)
 
 
 class VoicevoxBackend:
@@ -782,13 +794,12 @@ def _remove_created_backups(backups: dict[str, Path]) -> None:
 
 
 def _prune_backups(backups_dir: Path) -> None:
-    if not backups_dir.exists():
-        return
-    timestamps = sorted({path.name.split("_", 1)[0] for path in backups_dir.iterdir() if "_" in path.name})
-    for old_timestamp in timestamps[:-AUDIO_BACKUP_KEEP]:
-        for path in backups_dir.glob(f"{old_timestamp}_*"):
-            if path.is_file():
-                path.unlink()
+    cleanup_result = prune_timestamped_backup_files(
+        backups_dir,
+        keep=AUDIO_BACKUP_KEEP,
+    )
+    for cleanup_error in cleanup_result.get("errors", []):
+        LOGGER.warning("audio backup cleanup failed: %s", cleanup_error)
 
 
 def _update_meta_after_audio_success(work_dir: Path, now: datetime | None) -> None:
@@ -802,7 +813,7 @@ def _update_meta_after_audio_success(work_dir: Path, now: datetime | None) -> No
     meta["status"] = "audio_generated"
     meta["updated_at"] = timestamp
     meta["audio_updated_at"] = timestamp
-    write_json(meta_path, meta)
+    workspace_paths.write_work_meta(work_dir, meta)
 
 
 def _fail_report(
@@ -898,6 +909,8 @@ def _temp_root() -> Path | None:
 def _new_report(work_dir: Path, backend_name: str) -> dict:
     return {
         "schema_version": TTS_BUILD_REPORT_SCHEMA_VERSION,
+        "version": VERSION,
+        "description": DESCRIPTION,
         "ok": False,
         "backend": backend_name,
         "speaker_id": None,

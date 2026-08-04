@@ -12,7 +12,7 @@ from pef2_engine.processed_builder import (
     DEFAULT_INCLUDE_IMAGE_IN_HIGHLIGHT,
     parse_image_marker,
 )
-from version import VERSION
+from version import DESCRIPTION, VERSION
 
 
 SCHEMA_VERSION = "pef2-pre-processed-0.1"
@@ -118,6 +118,8 @@ def parse_to_pre_processed(data: object, source_path: str = "") -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "generator_version": VERSION,
+        "version": VERSION,
+        "description": DESCRIPTION,
         "purpose": PURPOSE,
         "source": {
             "source_format": source_format,

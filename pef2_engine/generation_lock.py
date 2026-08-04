@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from pef2_engine.workspace_cleanup import prune_stale_lock_backups
+
 
 LOCK_FILENAME = ".generation_lock"
 STALE_AFTER = timedelta(hours=6)
 JST = timezone(timedelta(hours=9))
+STALE_LOCK_BACKUP_KEEP = 2
+
+LOGGER = logging.getLogger(__name__)
 
 STALE_LOCK_CLEARED_MESSAGE = "前回の生成中ロックが残っていたため解除しました。もう一度操作してください。"
 ACTIVE_LOCK_MESSAGES = {
@@ -146,13 +152,30 @@ def clear_stale_generation_lock(
     current = now or datetime.now(JST)
     if current.tzinfo is None:
         current = current.replace(tzinfo=JST)
-    backup_dir = Path(work_dir) / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(work_dir)
+    backup_dir = work_dir / "backups"
+    try:
+        work_resolved = work_dir.resolve(strict=True)
+        if os.path.lexists(backup_dir):
+            if backup_dir.is_symlink() or not backup_dir.is_dir():
+                return None
+        else:
+            backup_dir.mkdir()
+        if backup_dir.resolve(strict=True).parent != work_resolved:
+            return None
+    except OSError:
+        return None
     backup_path = backup_dir / f"stale_generation_lock_{_timestamp(current)}.json"
     try:
         shutil.move(str(path), str(backup_path))
     except FileNotFoundError:
         return None
+    cleanup_result = prune_stale_lock_backups(
+        work_dir,
+        keep=STALE_LOCK_BACKUP_KEEP,
+    )
+    for cleanup_error in cleanup_result.get("errors", []):
+        LOGGER.warning("stale generation lock backup cleanup failed: %s", cleanup_error)
     return backup_path
 
 

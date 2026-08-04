@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import math
 import os
@@ -24,6 +26,7 @@ from pef2_engine.dictionary_review import (
 )
 from pef2_engine.dictionary_loader import load_symbol_reading_rules
 from pef2_engine.io_utils import read_json, write_json
+from pef2_engine.workspace_cleanup import prune_backup_directories
 from pef2_engine.image_alt_review import (
     DEFAULT_IMAGE_ALT_LENGTH_TARGET,
     IMAGE_ALT_LENGTH_TARGET_OPTIONS,
@@ -80,6 +83,7 @@ from pef2_engine.thumbnail_cache import (
     replace_image_and_activate_thumbnail,
 )
 from pef2_engine.tts_generator import VOICE_PREVIEW_DIRNAME, VOICE_PREVIEW_FILENAME, WORKSPACE_TEMP_DIRNAME
+from version import DESCRIPTION, VERSION
 
 STATUS_LABELS = {
     "pre_processed": "原稿取込済み",
@@ -127,6 +131,8 @@ WORKS_SORT_OPTIONS = {
 }
 DEFAULT_WORKS_SORT = "updated_desc"
 RESERVED_WORK_DIR_NAMES = {"_trash", "backups"}
+TRASH_CAPACITY_EXTENSIONS = {".mp3", ".epub", ".png", ".jpg", ".jpeg"}
+TRASH_TIMESTAMP_PATTERN = re.compile(r"^\d{8}-\d{6}$")
 ALLOWED_IMAGE_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 BULK_IMAGE_UPLOAD_MAX_FILES = 50
@@ -227,6 +233,7 @@ def list_works(workspace_root: Path, sort: str = DEFAULT_WORKS_SORT) -> list[dic
                 "has_draft": has_draft,
                 "can_generate": has_final and not has_draft,
                 "has_epub": _has_official_epub(item),
+                "epub_version_label": _epub_version_label(item),
             }
         )
     return _sort_works(works, normalize_works_sort(sort))
@@ -1606,6 +1613,7 @@ def import_legacy_dictionary_upload(
             "card_anchor": "dictionary-card",
         }
 
+    _prune_dictionary_backups(work_dir, "dictionary_reset")
     return {
         "status": "success",
         "title": "作品辞書読み込み",
@@ -1829,6 +1837,7 @@ def create_ai_dictionary_review_submission(
         str(backup.get("backup_dir")) if backup and backup.get("backup_dir") else ""
     )
     result["warnings"] = _ai_dictionary_review_warnings(work_dir, step5_result)
+    _prune_dictionary_backups(work_dir, "gemini_dictionary_reset")
     return result
 
 
@@ -2189,6 +2198,8 @@ def finalize_dictionary_review_direct_submission(
                 DICTIONARY_FINALIZE_BACKUP_FILENAMES,
             )
             _restore_meta_status(meta_path, original_meta, original_status)
+        else:
+            _prune_dictionary_backups(work_dir, "dictionary_finalize")
         return result
     except Exception as error:
         write_json(review_path, original_review)
@@ -2297,6 +2308,8 @@ def start_reedit_from_final(
     draft_data["edit_state"] = "draft"
     draft_data["source"] = workspace_paths.PROCESSED_FINAL_FILENAME
     draft_data["updated_at"] = now
+    draft_data["version"] = VERSION
+    draft_data["description"] = DESCRIPTION
     write_json(draft_path, draft_data)
     _update_draft_meta(work_dir, now)
     _write_reedit_editing_session(work_dir, now)
@@ -2373,6 +2386,8 @@ def save_work_draft(
     draft_data["edit_state"] = "draft"
     draft_data["source"] = selected["filename"]
     draft_data["updated_at"] = now
+    draft_data["version"] = VERSION
+    draft_data["description"] = DESCRIPTION
     write_json(work_dir / workspace_paths.PROCESSED_DRAFT_FILENAME, draft_data)
     _update_draft_meta(work_dir, now)
     _write_draft_editing_session(work_dir, now)
@@ -2451,6 +2466,8 @@ def save_work_final(
     final_data["edit_state"] = "final"
     final_data["source"] = selected["filename"]
     final_data["updated_at"] = now
+    final_data["version"] = VERSION
+    final_data["description"] = DESCRIPTION
     final_path = work_dir / workspace_paths.PROCESSED_FINAL_FILENAME
     write_json(final_path, final_data)
     if final_path.exists():
@@ -2506,12 +2523,20 @@ def move_work_to_trash(workspace_root: Path, work_id: str) -> dict:
             "error": "invalid_work_id_or_missing_work",
         }
 
-    trash_root = Path(workspace_root) / "_trash"
+    trash_root, trash_error = _resolve_trash_root(workspace_root, create=True)
+    if trash_root is None:
+        return {
+            "status": "failed",
+            "message": "作品を削除できませんでした。ワークスペースを確認してください。",
+            "error": trash_error or "trash_unavailable",
+        }
     timestamp = datetime.now(workspace_paths.JST).strftime("%Y%m%d-%H%M%S")
-    trash_root.mkdir(parents=True, exist_ok=True)
     destination = _unique_trash_destination(trash_root, work_dir.name, timestamp)
     try:
-        shutil.move(str(work_dir), str(destination))
+        current_work_dir = resolve_deletable_work_dir(workspace_root, work_id)
+        if current_work_dir is None or current_work_dir != work_dir:
+            raise FileNotFoundError("work changed before move")
+        current_work_dir.rename(destination)
     except Exception as error:
         return {
             "status": "failed",
@@ -2523,6 +2548,421 @@ def move_work_to_trash(workspace_root: Path, work_id: str) -> dict:
         "message": "作品を一覧から削除しました。",
         "trash_path": str(destination),
     }
+
+
+def load_trash_page(workspace_root: Path) -> dict:
+    return _scan_trash(workspace_root)
+
+
+def restore_work_from_trash(
+    workspace_root: Path,
+    trash_entry: str,
+) -> dict:
+    workspace_resolved, workspace_error = _resolve_workspace_root_for_trash(workspace_root)
+    if workspace_resolved is None:
+        return _trash_failure("ワークスペースを確認できないため、作品を元に戻せませんでした。", workspace_error)
+    trash_root, trash_error = _resolve_trash_root(workspace_resolved, create=False)
+    if trash_root is None:
+        return _trash_failure("削除済みの作品が見つかりませんでした。", trash_error or "trash_missing")
+    entry_path = _resolve_trash_entry_path(trash_root, trash_entry)
+    if entry_path is None:
+        return _trash_failure("元に戻す作品を確認できませんでした。", "invalid_trash_entry")
+    item, item_status, item_error = _load_trash_entry(trash_root, entry_path)
+    if item is None:
+        return _trash_failure("この項目は作品として元に戻せません。", item_error or item_status)
+    if item.get("locked"):
+        return _trash_failure("この作品は処理中のため、元に戻せません。", "generation_lock_exists")
+
+    work_id = str(item["work_id"])
+    destination = workspace_resolved / work_id
+    if os.path.lexists(destination):
+        return _trash_failure(
+            "同じ作品IDの作品がすでにあるため、元に戻せませんでした。",
+            "work_id_collision",
+        )
+    if destination.parent != workspace_resolved:
+        return _trash_failure("元に戻す場所を安全に確認できませんでした。", "restore_outside_workspace")
+
+    entry_path = _resolve_trash_entry_path(trash_root, trash_entry)
+    if entry_path is None:
+        return _trash_failure("元に戻す作品が見つかりませんでした。", "trash_entry_missing")
+    current_item, current_status, current_error = _load_trash_entry(trash_root, entry_path)
+    if current_item is None or current_item.get("work_id") != work_id:
+        return _trash_failure("元に戻す作品の状態が変わったため、操作を中止しました。", current_error or current_status)
+    if current_item.get("locked"):
+        return _trash_failure("この作品は処理中のため、元に戻せません。", "generation_lock_exists")
+    if os.path.lexists(destination):
+        return _trash_failure(
+            "同じ作品IDの作品がすでにあるため、元に戻せませんでした。",
+            "work_id_collision",
+        )
+    try:
+        entry_path.rename(destination)
+    except FileExistsError:
+        return _trash_failure(
+            "同じ作品IDの作品がすでにあるため、元に戻せませんでした。",
+            "work_id_collision",
+        )
+    except OSError as error:
+        return _trash_failure(
+            "作品を元に戻せませんでした。ワークスペースの接続を確認してください。",
+            f"{type(error).__name__}: {error}",
+        )
+    return {
+        "status": "success",
+        "message": "作品を元に戻しました。",
+        "work_id": work_id,
+    }
+
+
+def calculate_trash_capacity(workspace_root: Path) -> dict:
+    scan = _scan_trash(workspace_root)
+    if scan.get("status") == "failed":
+        return {
+            "status": "failed",
+            "message": "主なデータ容量を計算できませんでした。ワークスペースの接続を確認してください。",
+            "errors": scan.get("errors", []),
+            "snapshot": scan.get("snapshot", ""),
+        }
+
+    total_bytes = 0
+    file_count = 0
+    errors = list(scan.get("errors", []))
+    trash_root, trash_error = _resolve_trash_root(workspace_root, create=False)
+    if trash_root is None:
+        if trash_error:
+            return {
+                "status": "failed",
+                "message": "主なデータ容量を計算できませんでした。ワークスペースの接続を確認してください。",
+                "errors": [{"entry": "", "reason": trash_error}],
+                "snapshot": scan.get("snapshot", ""),
+            }
+    else:
+        for item in scan.get("items", []):
+            entry_path = _resolve_trash_entry_path(trash_root, str(item.get("trash_entry") or ""))
+            if entry_path is None:
+                errors.append({"entry": str(item.get("trash_entry") or ""), "reason": "entry_missing"})
+                continue
+
+            def _walk_error(error: OSError) -> None:
+                errors.append({"entry": entry_path.name, "reason": f"walk_failed:{type(error).__name__}:{error}"})
+
+            for current_root, dirnames, filenames in os.walk(entry_path, topdown=True, onerror=_walk_error, followlinks=False):
+                current_path = Path(current_root)
+                dirnames[:] = [
+                    dirname
+                    for dirname in dirnames
+                    if not (current_path / dirname).is_symlink()
+                ]
+                for filename in filenames:
+                    path = current_path / filename
+                    if path.suffix.lower() not in TRASH_CAPACITY_EXTENSIONS or path.is_symlink():
+                        continue
+                    try:
+                        total_bytes += path.stat().st_size
+                    except OSError as error:
+                        errors.append({"entry": entry_path.name, "reason": f"stat_failed:{type(error).__name__}:{error}"})
+                    else:
+                        file_count += 1
+
+    if errors and file_count == 0:
+        status = "failed"
+        message = "主なデータ容量を計算できませんでした。ワークスペースの接続を確認してください。"
+    elif errors:
+        status = "partial"
+        message = "主なデータ容量を概算しましたが、一部のファイルを確認できませんでした。"
+    else:
+        status = "success"
+        message = "主なデータ容量を概算しました。"
+    calculated_at = datetime.now(workspace_paths.JST).isoformat(timespec="seconds")
+    return {
+        "status": status,
+        "message": message,
+        "bytes": total_bytes,
+        "size_label": _format_capacity(total_bytes),
+        "file_count": file_count,
+        "calculated_at": calculated_at,
+        "calculated_at_label": _datetime_label(calculated_at),
+        "errors": errors,
+        "snapshot": scan.get("snapshot", ""),
+    }
+
+
+def empty_trash(
+    workspace_root: Path,
+    *,
+    expected_snapshot: str,
+) -> dict:
+    scan = _scan_trash(workspace_root)
+    if scan.get("status") != "success":
+        return {
+            "status": "failed",
+            "message": "ゴミ箱を空にできませんでした。ワークスペースの接続を確認してください。",
+            "success_count": 0,
+            "failed_count": 0,
+            "errors": scan.get("errors", []),
+        }
+    if not expected_snapshot or expected_snapshot != scan.get("snapshot"):
+        return {
+            "status": "changed",
+            "message": "ゴミ箱の内容が変わったため、削除を開始しませんでした。内容を確認して、もう一度操作してください。",
+            "success_count": 0,
+            "failed_count": 0,
+            "errors": [],
+        }
+
+    trash_root, trash_error = _resolve_trash_root(workspace_root, create=False)
+    if trash_root is None:
+        if trash_error:
+            return {
+                "status": "failed",
+                "message": "ゴミ箱を空にできませんでした。ワークスペースの接続を確認してください。",
+                "success_count": 0,
+                "failed_count": 0,
+                "errors": [{"entry": "", "reason": trash_error}],
+            }
+        return {
+            "status": "success",
+            "message": "ゴミ箱は空です。",
+            "success_count": 0,
+            "failed_count": 0,
+            "errors": [],
+        }
+
+    success_count = 0
+    errors: list[dict] = []
+    for item in scan.get("items", []):
+        trash_entry = str(item.get("trash_entry") or "")
+        entry_path = _resolve_trash_entry_path(trash_root, trash_entry)
+        if entry_path is None:
+            errors.append({"entry": trash_entry, "reason": "entry_missing"})
+            continue
+        current_item, item_status, item_error = _load_trash_entry(trash_root, entry_path)
+        if current_item is None:
+            errors.append({"entry": trash_entry, "reason": item_error or item_status})
+            continue
+        if current_item.get("locked"):
+            errors.append({"entry": trash_entry, "reason": "generation_lock_exists"})
+            continue
+        try:
+            shutil.rmtree(entry_path)
+        except OSError as error:
+            errors.append({"entry": trash_entry, "reason": f"{type(error).__name__}: {error}"})
+        else:
+            success_count += 1
+
+    failed_count = len(errors)
+    if success_count and failed_count:
+        status = "partial"
+        message = f"削除済み作品を{success_count}件完全に削除しました。{failed_count}件は削除できませんでした。"
+    elif failed_count:
+        status = "failed"
+        message = f"削除済み作品{failed_count}件を削除できませんでした。"
+    else:
+        status = "success"
+        message = f"削除済み作品を{success_count}件完全に削除しました。"
+    return {
+        "status": status,
+        "message": message,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "errors": errors,
+    }
+
+
+def _scan_trash(workspace_root: Path) -> dict:
+    workspace_resolved, workspace_error = _resolve_workspace_root_for_trash(workspace_root)
+    if workspace_resolved is None:
+        return {
+            "status": "failed",
+            "message": "ゴミ箱を確認できませんでした。ワークスペースの接続を確認してください。",
+            "items": [],
+            "invalid_count": 0,
+            "read_error_count": 1,
+            "errors": [{"entry": "", "reason": workspace_error}],
+            "snapshot": "",
+        }
+    trash_root, trash_error = _resolve_trash_root(workspace_resolved, create=False)
+    if trash_root is None:
+        if trash_error:
+            return {
+                "status": "failed",
+                "message": "ゴミ箱を確認できませんでした。ワークスペースの接続を確認してください。",
+                "items": [],
+                "invalid_count": 0,
+                "read_error_count": 1,
+                "errors": [{"entry": "", "reason": trash_error}],
+                "snapshot": "",
+            }
+        return {
+            "status": "success",
+            "message": "",
+            "items": [],
+            "invalid_count": 0,
+            "read_error_count": 0,
+            "errors": [],
+            "snapshot": _trash_snapshot([]),
+        }
+
+    items: list[dict] = []
+    invalid_count = 0
+    errors: list[dict] = []
+    try:
+        entries = sorted(trash_root.iterdir(), key=lambda path: path.name)
+    except OSError as error:
+        return {
+            "status": "failed",
+            "message": "ゴミ箱を確認できませんでした。ワークスペースの接続を確認してください。",
+            "items": [],
+            "invalid_count": 0,
+            "read_error_count": 1,
+            "errors": [{"entry": "", "reason": f"{type(error).__name__}: {error}"}],
+            "snapshot": "",
+        }
+    for entry_path in entries:
+        item, item_status, item_error = _load_trash_entry(trash_root, entry_path)
+        if item is not None:
+            items.append(item)
+        elif item_status == "read_error":
+            errors.append({"entry": entry_path.name, "reason": item_error or "read_error"})
+        else:
+            invalid_count += 1
+
+    items.sort(key=lambda item: (str(item.get("deleted_at") or ""), str(item.get("trash_entry") or "")), reverse=True)
+    status = "partial" if errors else "success"
+    return {
+        "status": status,
+        "message": "ゴミ箱の一部を確認できませんでした。" if errors else "",
+        "items": items,
+        "invalid_count": invalid_count,
+        "read_error_count": len(errors),
+        "errors": errors,
+        "snapshot": _trash_snapshot([str(item["trash_entry"]) for item in items]),
+    }
+
+
+def _load_trash_entry(trash_root: Path, entry_path: Path) -> tuple[dict | None, str, str]:
+    try:
+        if entry_path.is_symlink() or not entry_path.is_dir():
+            return None, "invalid", "not_a_direct_directory"
+        trash_resolved = trash_root.resolve(strict=True)
+        entry_resolved = entry_path.resolve(strict=True)
+    except OSError as error:
+        return None, "read_error", f"{type(error).__name__}: {error}"
+    if entry_resolved.parent != trash_resolved:
+        return None, "invalid", "outside_trash"
+
+    meta_path = entry_path / workspace_paths.WORK_META_FILENAME
+    try:
+        if meta_path.is_symlink() or not meta_path.is_file():
+            return None, "invalid", "meta_missing"
+        meta = read_json(meta_path)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None, "invalid", "meta_invalid"
+    except FileNotFoundError:
+        return None, "invalid", "meta_missing"
+    except OSError as error:
+        return None, "read_error", f"{type(error).__name__}: {error}"
+    if not isinstance(meta, dict):
+        return None, "invalid", "meta_invalid"
+    work_id = str(meta.get("work_id") or "")
+    if not is_safe_work_id(work_id) or _is_reserved_work_id(work_id):
+        return None, "invalid", "invalid_work_id"
+    match = re.fullmatch(rf"{re.escape(work_id)}_(\d{{8}}-\d{{6}})(?:_\d+)?", entry_path.name)
+    if match is None or TRASH_TIMESTAMP_PATTERN.fullmatch(match.group(1)) is None:
+        return None, "invalid", "invalid_trash_name"
+    try:
+        deleted_at_value = datetime.strptime(match.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=workspace_paths.JST)
+    except ValueError:
+        return None, "invalid", "invalid_deleted_at"
+    deleted_at = deleted_at_value.isoformat(timespec="seconds")
+    lock_path = entry_path / ".generation_lock"
+    try:
+        locked = os.path.lexists(lock_path)
+    except OSError as error:
+        return None, "read_error", f"{type(error).__name__}: {error}"
+    return (
+        {
+            "trash_entry": entry_path.name,
+            "work_id": work_id,
+            "title": _work_title(work_id, meta),
+            "deleted_at": deleted_at,
+            "deleted_at_label": _datetime_label(deleted_at),
+            "locked": locked,
+        },
+        "valid",
+        "",
+    )
+
+
+def _resolve_workspace_root_for_trash(workspace_root: Path) -> tuple[Path | None, str]:
+    root = Path(workspace_root)
+    try:
+        if not root.is_dir():
+            return None, "workspace_unavailable"
+        return root.resolve(strict=True), ""
+    except OSError as error:
+        return None, f"{type(error).__name__}: {error}"
+
+
+def _resolve_trash_root(
+    workspace_root: Path,
+    *,
+    create: bool,
+) -> tuple[Path | None, str]:
+    workspace_resolved, workspace_error = _resolve_workspace_root_for_trash(workspace_root)
+    if workspace_resolved is None:
+        return None, workspace_error
+    trash_root = workspace_resolved / "_trash"
+    if not os.path.lexists(trash_root):
+        if not create:
+            return None, ""
+        try:
+            trash_root.mkdir()
+        except OSError as error:
+            return None, f"{type(error).__name__}: {error}"
+    try:
+        if trash_root.is_symlink() or not trash_root.is_dir():
+            return None, "invalid_trash_root"
+        trash_resolved = trash_root.resolve(strict=True)
+    except OSError as error:
+        return None, f"{type(error).__name__}: {error}"
+    if trash_resolved.parent != workspace_resolved or trash_resolved.name != "_trash":
+        return None, "trash_outside_workspace"
+    return trash_resolved, ""
+
+
+def _resolve_trash_entry_path(trash_root: Path, trash_entry: str) -> Path | None:
+    if not is_safe_work_id(trash_entry):
+        return None
+    candidate = trash_root / trash_entry
+    try:
+        if candidate.is_symlink() or not candidate.is_dir():
+            return None
+        candidate_resolved = candidate.resolve(strict=True)
+        trash_resolved = trash_root.resolve(strict=True)
+    except OSError:
+        return None
+    return candidate_resolved if candidate_resolved.parent == trash_resolved else None
+
+
+def _trash_snapshot(entries: list[str]) -> str:
+    payload = "\n".join(sorted(entries)).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _trash_failure(message: str, error: str) -> dict:
+    return {"status": "failed", "message": message, "error": error}
+
+
+def _format_capacity(size: int) -> str:
+    value = float(max(0, size))
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
 
 
 def resolve_deletable_work_dir(workspace_root: Path, work_id: str) -> Path | None:
@@ -2822,6 +3262,14 @@ def _audio_needs_regeneration(workspace_root: Path, work_dir: Path) -> bool:
 
 def _has_official_epub(work_dir: Path) -> bool:
     return _latest_official_epub(work_dir) is not None
+
+
+def _epub_version_label(work_dir: Path) -> str:
+    if not _has_official_epub(work_dir):
+        return "—"
+    report = _read_optional_dict(work_dir / "epub" / "epub_build_report.json")
+    version = str(report.get("version") or "").strip()
+    return version or "—"
 
 
 def _has_current_epub(workspace_root: Path, work_dir: Path) -> bool:
@@ -3743,6 +4191,12 @@ def _unique_backup_dir(work_dir: Path, prefix: str) -> Path:
     raise RuntimeError("backup directory could not be created")
 
 
+def _prune_dictionary_backups(work_dir: Path, prefix: str) -> None:
+    cleanup_result = prune_backup_directories(work_dir, prefix, keep=1)
+    for cleanup_error in cleanup_result.get("errors", []):
+        LOGGER.warning("dictionary backup cleanup failed: %s", cleanup_error)
+
+
 def _report_error_summary(report: object) -> str:
     if not isinstance(report, dict):
         return "unknown report error"
@@ -4024,11 +4478,11 @@ def _is_reserved_work_id(work_id: str) -> bool:
 def _unique_trash_destination(trash_root: Path, work_id: str, timestamp: str) -> Path:
     base_name = f"{work_id}_{timestamp}"
     candidate = trash_root / base_name
-    if not candidate.exists():
+    if not os.path.lexists(candidate):
         return candidate
     for index in range(1, 1000):
         candidate = trash_root / f"{base_name}_{index}"
-        if not candidate.exists():
+        if not os.path.lexists(candidate):
             return candidate
     raise RuntimeError("退避先を作成できませんでした。")
 
@@ -4133,7 +4587,7 @@ def _update_draft_meta(work_dir: Path, updated_at: str) -> None:
     meta = _read_optional_dict(meta_path)
     meta["status"] = "draft_saved"
     meta["updated_at"] = updated_at
-    write_json(meta_path, meta)
+    workspace_paths.write_work_meta(work_dir, meta)
 
 
 def _update_final_meta(work_dir: Path, updated_at: str) -> None:
@@ -4141,7 +4595,7 @@ def _update_final_meta(work_dir: Path, updated_at: str) -> None:
     meta = _read_optional_dict(meta_path)
     meta["status"] = "finalized"
     meta["updated_at"] = updated_at
-    write_json(meta_path, meta)
+    workspace_paths.write_work_meta(work_dir, meta)
 
 
 def _cleanup_draft_after_final(work_dir: Path) -> None:

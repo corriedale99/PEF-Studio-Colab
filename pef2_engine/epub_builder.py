@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import math
 import re
 import shutil
 import unicodedata
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,10 +23,12 @@ from pef2_engine.image_paths import (
     validate_image_reference,
 )
 from pef2_engine.io_utils import read_json, write_json
+from pef2_engine.workspace_cleanup import prune_timestamped_backup_files
+from version import DESCRIPTION, VERSION
 
 
 EPUB_BUILD_REPORT_SCHEMA_VERSION = "epub-build-report-1"
-EPUB_BACKUP_KEEP = 2
+EPUB_BACKUP_KEEP = 1
 PROCESSED_FINAL_FILENAME = workspace_paths.PROCESSED_FINAL_FILENAME
 AUDIO_FILENAME = "audio.mp3"
 SYNC_MAP_FILENAME = "sync_map.json"
@@ -37,6 +41,8 @@ IMAGE_MEDIA_TYPES = {
     ".jpeg": "image/jpeg",
 }
 CONTROL_ALLOWED = {0x09, 0x0A, 0x0D}
+
+LOGGER = logging.getLogger(__name__)
 
 
 class EpubImageEntryCollisionError(ValueError):
@@ -65,6 +71,7 @@ def generate_epub_for_work(
         context = _preflight(work_dir, workspace_root, report, allow_missing_images=allow_missing_images)
         if report["errors"]:
             return _fail_report(report, tmp_dir, failed_dir)
+        context["modified_at"] = _epub_modified_at(now)
 
         output_name = f"{context['safe_title']}.epub"
         report["output_epub"] = f"epub/{output_name}"
@@ -734,11 +741,14 @@ def _content_opf(context: dict) -> str:
         )
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" prefix="media: http://www.idpf.org/epub/vocab/overlays/#">',
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" prefix="media: http://www.idpf.org/epub/vocab/overlays/# pef2: urn:pef2:metadata:">',
         "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">",
         f"    <dc:identifier id=\"bookid\">urn:pef2:{_xml_text(context['work_dir'].name)}</dc:identifier>",
         f"    <dc:title>{_xml_text(context['title'])}</dc:title>",
         "    <dc:language>ja</dc:language>",
+        f"    <meta property=\"dcterms:modified\">{_xml_text(context['modified_at'])}</meta>",
+        f"    <meta property=\"pef2:version\">{_xml_text(VERSION)}</meta>",
+        f"    <meta property=\"pef2:description\">{_xml_text(DESCRIPTION)}</meta>",
         f"    <meta property=\"media:duration\">{_format_time(context['duration_seconds'])}</meta>",
         "    <meta property=\"media:active-class\">mo-active</meta>",
         "  </metadata>",
@@ -813,6 +823,58 @@ def _validate_opf(content_opf: str, report: dict) -> None:
         if fragment not in content_opf:
             report["errors"].append(_error("invalid_content_opf", "content.opf required fragment is missing", fragment=fragment))
 
+    try:
+        root = ET.fromstring(content_opf)
+    except ET.ParseError as error:
+        report["errors"].append(_error("invalid_content_opf_xml", f"content.opf is not valid XML: {error}"))
+        return
+
+    package_prefix = str(root.attrib.get("prefix") or "")
+    if "pef2: urn:pef2:metadata:" not in package_prefix:
+        report["errors"].append(_error("invalid_content_opf", "content.opf pef2 prefix mapping is missing"))
+
+    metadata_items: dict[str, list[ET.Element]] = {}
+    for meta in root.findall(".//{http://www.idpf.org/2007/opf}meta"):
+        property_name = str(meta.attrib.get("property") or "")
+        metadata_items.setdefault(property_name, []).append(meta)
+    expected_metadata = {
+        "dcterms:modified": None,
+        "pef2:version": VERSION,
+        "pef2:description": DESCRIPTION,
+    }
+    for property_name, expected_text in expected_metadata.items():
+        items = metadata_items.get(property_name, [])
+        if len(items) != 1:
+            report["errors"].append(
+                _error(
+                    "invalid_content_opf_metadata_count",
+                    "content.opf metadata property must occur exactly once",
+                    property=property_name,
+                    actual=len(items),
+                )
+            )
+            continue
+        actual_text = items[0].text or ""
+        if property_name == "dcterms:modified" and re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+            actual_text,
+        ) is None:
+            report["errors"].append(
+                _error(
+                    "invalid_content_opf_metadata_value",
+                    "content.opf dcterms:modified must be a UTC timestamp",
+                    property=property_name,
+                )
+            )
+        elif expected_text is not None and actual_text != expected_text:
+            report["errors"].append(
+                _error(
+                    "invalid_content_opf_metadata_value",
+                    "content.opf metadata value does not match the studio version",
+                    property=property_name,
+                )
+            )
+
 
 def _validate_smil_text_refs(text_xhtml: str, smil_xml: str, sync_count: int, report: dict) -> None:
     text_ids = set(re.findall(r'\bid="(s\d{4,})"', text_xhtml))
@@ -835,13 +897,12 @@ def _backup_existing_epub(target_epub: Path, backups_dir: Path, timestamp: str) 
 
 
 def _prune_backups(backups_dir: Path) -> None:
-    if not backups_dir.exists():
-        return
-    timestamps = sorted({path.name.split("_", 1)[0] for path in backups_dir.iterdir() if "_" in path.name})
-    for old_timestamp in timestamps[:-EPUB_BACKUP_KEEP]:
-        for path in backups_dir.glob(f"{old_timestamp}_*"):
-            if path.is_file():
-                path.unlink()
+    cleanup_result = prune_timestamped_backup_files(
+        backups_dir,
+        keep=EPUB_BACKUP_KEEP,
+    )
+    for cleanup_error in cleanup_result.get("errors", []):
+        LOGGER.warning("EPUB backup cleanup failed: %s", cleanup_error)
 
 
 def _update_meta_after_epub_success(work_dir: Path, now: datetime | None) -> None:
@@ -858,7 +919,7 @@ def _update_meta_after_epub_success(work_dir: Path, now: datetime | None) -> Non
     meta["status"] = "exported"
     meta["updated_at"] = timestamp
     meta["epub_updated_at"] = timestamp
-    write_json(meta_path, meta)
+    workspace_paths.write_work_meta(work_dir, meta)
 
 
 def _read_required_json(path: Path, missing_code: str, invalid_code: str, report: dict) -> object | None:
@@ -1028,6 +1089,8 @@ def _is_number(value: object) -> bool:
 def _new_report(work_dir: Path) -> dict:
     return {
         "schema_version": EPUB_BUILD_REPORT_SCHEMA_VERSION,
+        "version": VERSION,
+        "description": DESCRIPTION,
         "ok": False,
         "committed": False,
         "work_id": work_dir.name,
@@ -1057,6 +1120,10 @@ def _new_report(work_dir: Path) -> dict:
 
 def _timestamp(now: datetime | None = None) -> str:
     return _jst_datetime(now).strftime("%Y%m%d-%H%M%S")
+
+
+def _epub_modified_at(now: datetime | None = None) -> str:
+    return _jst_datetime(now).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _jst_datetime(now: datetime | None = None) -> datetime:

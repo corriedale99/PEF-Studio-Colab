@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from version import DESCRIPTION, VERSION
+
 
 SCHEMA_VERSION = "dictionary_review-1"
 SOURCE = "work_dictionary_draft"
@@ -20,6 +22,8 @@ def build_dictionary_review(
 ) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
+        "version": VERSION,
+        "description": DESCRIPTION,
         "source": SOURCE,
         "input_stem": input_stem or "unknown",
         "generated_from": generated_from,
@@ -34,6 +38,8 @@ def build_dictionary_review(
 def build_empty_dictionary_review(input_stem: str = "unknown") -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
+        "version": VERSION,
+        "description": DESCRIPTION,
         "source": EMPTY_SOURCE,
         "input_stem": input_stem or "unknown",
         "generated_from": EMPTY_GENERATED_FROM,
@@ -44,6 +50,8 @@ def build_empty_dictionary_review(input_stem: str = "unknown") -> dict:
 def build_manual_dictionary_review(input_stem: str = "unknown") -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
+        "version": VERSION,
+        "description": DESCRIPTION,
         "source": MANUAL_SOURCE,
         "input_stem": input_stem or "unknown",
         "generated_from": MANUAL_GENERATED_FROM,
@@ -128,6 +136,8 @@ def append_manual_dictionary_review_item(
         }
     )
     updated_review["items"] = updated_items
+    updated_review["version"] = VERSION
+    updated_review["description"] = DESCRIPTION
     return updated_review
 
 
@@ -282,6 +292,8 @@ def apply_dictionary_review_form_update(original_review: object, form_items: obj
         raise DictionaryReviewValidationError(errors)
 
     updated_review["items"] = updated_items
+    updated_review["version"] = VERSION
+    updated_review["description"] = DESCRIPTION
     return updated_review
 
 

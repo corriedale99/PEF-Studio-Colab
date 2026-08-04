@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pef2_engine.io_utils import read_json, write_json
+from version import VERSION
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +81,7 @@ def create_work_meta(
         "title": title,
         "input_stem": resolved_input_stem,
         "source_original_filename": source_original_filename,
+        "version": VERSION,
         "status": status,
         "created_at": timestamp,
         "updated_at": timestamp,
@@ -87,6 +89,7 @@ def create_work_meta(
 
 
 def write_work_meta(work_dir: Path, meta: dict) -> None:
+    meta["version"] = VERSION
     write_json(work_dir / WORK_META_FILENAME, meta)
 
 
@@ -101,7 +104,7 @@ def update_work_meta_status(
         raise ValueError("meta.json top-level must be object")
     meta["status"] = status
     meta["updated_at"] = _jst_datetime(now).isoformat()
-    write_json(meta_path, meta)
+    write_work_meta(work_dir, meta)
     return meta
 
 

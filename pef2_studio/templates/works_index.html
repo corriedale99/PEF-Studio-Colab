@@ -27,7 +27,7 @@
         <thead>
           <tr>
             <th>作品名</th>
-            <th>作成日時</th>
+            <th>版番号</th>
             <th>更新日時</th>
             <th>状態</th>
             <th>操作</th>
@@ -37,7 +37,7 @@
           {% for work in works %}
             <tr>
               <td class="work-title">{{ work.title }}</td>
-              <td>{{ work.created_at_label }}</td>
+              <td>{{ work.epub_version_label }}</td>
               <td>{{ work.updated_at_label }}</td>
               <td>
                 <span class="status">{{ work.status_label }}</span>
@@ -124,5 +124,11 @@
         <button class="secondary-button" type="submit">全体設定を保存する</button>
       </div>
     </form>
+  </section>
+
+  <section class="panel">
+    <h2>ゴミ箱</h2>
+    <p>削除した作品を元に戻したり、ゴミ箱を空にしたりできます。</p>
+    <a class="button" href="{{ url_for('trash_index') }}">ゴミ箱を開く</a>
   </section>
 {% endblock %}

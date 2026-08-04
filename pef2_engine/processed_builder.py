@@ -16,7 +16,7 @@ from pef2_engine.paths import resolve_named_file
 from pef2_engine.ruby import strip_aozora_ruby
 from pef2_engine import workspace_paths
 from pef2_engine.tts_settings import resolve_tts_settings_with_sources
-from version import VERSION
+from version import DESCRIPTION, VERSION
 
 
 SCHEMA_VERSION = "processed-1"
@@ -160,6 +160,8 @@ def run_processed_workspace_partial(work_dir: Path, indexes: list[int]) -> dict:
         report["status"] = "failed"
         return report
 
+    target_copy["version"] = VERSION
+    target_copy["description"] = DESCRIPTION
     write_json(target_path, target_copy)
     _update_step6c_report_after_partial(
         work_dir,
@@ -427,6 +429,7 @@ def build_processed_workspace_full(work_dir: Path) -> tuple[dict | None, dict]:
     processed = {
         "schema_version": SCHEMA_VERSION,
         "version": VERSION,
+        "description": DESCRIPTION,
         "work_id": work_id,
         "title": _resolve_step6c_title(work_dir, meta, pre_processed),
         "source": workspace_paths.PRE_PROCESSED_JSON_FILENAME,
@@ -998,6 +1001,7 @@ def build_processed_from_pre_processed(
         "schema_version": SCHEMA_VERSION,
         "title": title,
         "version": VERSION,
+        "description": DESCRIPTION,
         "source_format": source_format,
         "source_id": resolved_source_id,
         "builder": {

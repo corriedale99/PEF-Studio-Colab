@@ -1,0 +1,98 @@
+{% set page_role = "page-role--hub" %}
+{% extends "base.html" %}
+{% block title %}ゴミ箱 - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <div class="section-header">
+      <h1>ゴミ箱</h1>
+      <a class="button" href="{{ url_for('works_index') }}">作品一覧へ戻る</a>
+    </div>
+
+    {% if result %}
+      <div class="notice {% if result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
+        <p>{{ result.message }}</p>
+        {% if result.status == 'partial' and result.success_count is defined %}
+          <p>成功 {{ result.success_count }}件 / 失敗 {{ result.failed_count }}件</p>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    {% if trash.status == "failed" %}
+      <div class="notice warning-panel">{{ trash.message }}</div>
+    {% else %}
+      {% if trash.message %}
+        <div class="notice warning-panel">{{ trash.message }}</div>
+      {% endif %}
+      {% if trash.invalid_count %}
+        <div class="notice warning-panel">復元できない項目が{{ trash.invalid_count }}件あります。安全のため表示・削除していません。</div>
+      {% endif %}
+      {% if trash["items"] %}
+        <table class="works-table">
+          <thead>
+            <tr>
+              <th>作品名</th>
+              <th>元の作品ID</th>
+              <th>削除日時</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for work in trash["items"] %}
+              <tr>
+                <td class="work-title">{{ work.title }}</td>
+                <td class="work-id">{{ work.work_id }}</td>
+                <td>{{ work.deleted_at_label }}</td>
+                <td>
+                  {% if work.locked %}
+                    <span class="button disabled-button">処理中のため操作できません</span>
+                  {% else %}
+                    <form method="post" action="{{ url_for('restore_trash_work', trash_entry=work.trash_entry) }}" data-busy-message="作品を元に戻しています。しばらくお待ちください。">
+                      <button class="button action-button" type="submit">元に戻す</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty">削除済みの作品はありません。</p>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  {% if trash.status != "failed" %}
+    <section class="panel">
+      <h2>主なデータ容量（概算）</h2>
+      <p>MP3、EPUB、PNG、JPG、JPEGファイルだけを集計します。</p>
+      {% if capacity %}
+        <dl class="meta-grid">
+          <div>
+            <dt>主なデータ容量（概算）</dt>
+            <dd>{{ capacity.size_label }}</dd>
+          </div>
+          <div>
+            <dt>集計対象ファイル数</dt>
+            <dd>{{ capacity.file_count }}件</dd>
+          </div>
+          <div>
+            <dt>計算日時</dt>
+            <dd>{{ capacity.calculated_at_label }}</dd>
+          </div>
+          <div>
+            <dt>計算状態</dt>
+            <dd>{% if capacity.status == "partial" %}一部取得失敗{% else %}計算成功{% endif %}</dd>
+          </div>
+        </dl>
+      {% endif %}
+      <div class="form-actions">
+        <form method="post" action="{{ url_for('calculate_trash_capacity_route') }}" data-busy-message="主なデータ容量を計算しています。しばらくお待ちください。">
+          <button class="button action-button" type="submit">主なデータ容量を計算する</button>
+        </form>
+        {% if trash["items"] and trash.status == "success" %}
+          <a class="button danger-button" href="{{ url_for('confirm_empty_trash') }}">ゴミ箱を空にする</a>
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

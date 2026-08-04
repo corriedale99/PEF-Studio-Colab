@@ -34,6 +34,7 @@ from pef2_studio.workspace_view import (
     WORKS_SORT_OPTIONS,
     add_dictionary_review_item_submission,
     build_workspace_tts_settings_view,
+    calculate_trash_capacity,
     create_ai_dictionary_review_submission,
     create_empty_dictionary_processed_submission,
     create_manual_dictionary_review_submission,
@@ -43,6 +44,7 @@ from pef2_studio.workspace_view import (
     import_legacy_dictionary_upload,
     import_legacy_pef_upload,
     import_text_upload,
+    load_trash_page,
     load_ai_dictionary_review_confirmation,
     load_dictionary_review_page,
     load_work_images_page,
@@ -65,7 +67,9 @@ from pef2_studio.workspace_view import (
     resolve_work_image_file,
     resolve_work_image_source,
     resolve_work_dir,
+    restore_work_from_trash,
     start_reedit_from_final,
+    empty_trash,
 )
 from pef2_engine.tts_generator import (
     VOICE_PREVIEW_DIRNAME,
@@ -124,6 +128,8 @@ def create_app(workspace_root: Path | None = None):
     resolved_workspace_root = (
         Path(workspace_root) if workspace_root is not None else get_workspace_root()
     )
+    trash_capacity_cache: dict = {}
+    trash_capacity_cache_lock = threading.Lock()
 
     @app.get("/")
     def works_index():
@@ -196,6 +202,25 @@ def create_app(workspace_root: Path | None = None):
     @app.post("/works/<work_id>/delete")
     def delete_work(work_id: str):
         selected_sort = normalize_works_sort(request.form.get("sort"))
+        lock_result = _guard_generation_lock_for_post(work_id)
+        if lock_result is not None:
+            work = load_work_delete_confirmation(resolved_workspace_root, work_id)
+            if work is None:
+                abort(404)
+            return (
+                render_template(
+                    "work_delete_confirm.html",
+                    workspace_root=resolved_workspace_root,
+                    work=work,
+                    selected_sort=selected_sort,
+                    result={
+                        "status": "failed",
+                        "message": lock_result.get("message"),
+                        "error": "\n".join(lock_result.get("errors", [])[1:]),
+                    },
+                ),
+                _lock_status_code(lock_result),
+            )
         result = move_work_to_trash(resolved_workspace_root, work_id)
         if result.get("status") == "success":
             _cleanup_deleted_work_thumbnail_cache(resolved_workspace_root, work_id)
@@ -214,6 +239,60 @@ def create_app(workspace_root: Path | None = None):
                 result=result,
             ),
             400,
+        )
+
+    @app.get("/trash")
+    def trash_index():
+        return _render_trash_index()
+
+    @app.post("/trash/capacity")
+    def calculate_trash_capacity_route():
+        result = calculate_trash_capacity(resolved_workspace_root)
+        if result.get("status") in {"success", "partial"} and result.get("snapshot"):
+            with trash_capacity_cache_lock:
+                trash_capacity_cache.clear()
+                trash_capacity_cache.update(result)
+        return _render_trash_index(
+            result=result,
+            status_code=200 if result.get("status") in {"success", "partial"} else 400,
+        )
+
+    @app.post("/trash/<trash_entry>/restore")
+    def restore_trash_work(trash_entry: str):
+        result = restore_work_from_trash(resolved_workspace_root, trash_entry)
+        if result.get("status") == "success":
+            with trash_capacity_cache_lock:
+                trash_capacity_cache.clear()
+        return _render_trash_index(
+            result=result,
+            status_code=200 if result.get("status") == "success" else 400,
+        )
+
+    @app.get("/trash/empty")
+    def confirm_empty_trash():
+        trash = load_trash_page(resolved_workspace_root)
+        capacity = _cached_trash_capacity(trash)
+        return (
+            render_template(
+                "trash_empty_confirm.html",
+                workspace_root=resolved_workspace_root,
+                trash=trash,
+                capacity=capacity,
+            ),
+            200 if trash.get("status") == "success" else 400,
+        )
+
+    @app.post("/trash/empty")
+    def empty_trash_route():
+        result = empty_trash(
+            resolved_workspace_root,
+            expected_snapshot=str(request.form.get("snapshot") or ""),
+        )
+        with trash_capacity_cache_lock:
+            trash_capacity_cache.clear()
+        return _render_trash_index(
+            result=result,
+            status_code=200 if result.get("status") in {"success", "partial"} else 400,
         )
 
     @app.get("/imports/legacy-pef")
@@ -1447,6 +1526,34 @@ def create_app(workspace_root: Path | None = None):
             ),
             status_code,
         )
+
+    def _render_trash_index(
+        *,
+        result: dict | None = None,
+        status_code: int = 200,
+    ):
+        trash = load_trash_page(resolved_workspace_root)
+        capacity = _cached_trash_capacity(trash)
+        if trash.get("status") == "failed" and status_code == 200:
+            status_code = 400
+        return (
+            render_template(
+                "trash_index.html",
+                workspace_root=resolved_workspace_root,
+                trash=trash,
+                result=result,
+                capacity=capacity,
+            ),
+            status_code,
+        )
+
+    def _cached_trash_capacity(trash: dict) -> dict | None:
+        with trash_capacity_cache_lock:
+            if not trash_capacity_cache:
+                return None
+            if trash_capacity_cache.get("snapshot") != trash.get("snapshot"):
+                return None
+            return dict(trash_capacity_cache)
 
     def _form_speaker_id(value: object) -> int | None:
         text = str(value or "").strip()

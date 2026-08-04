@@ -1,0 +1,43 @@
+{% set page_role = "page-role--hub" %}
+{% extends "base.html" %}
+{% block title %}ゴミ箱を空にする - PEFスタジオ{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>ゴミ箱を空にしますか？</h1>
+
+    {% if trash.status != "success" %}
+      <div class="notice warning-panel">{{ trash.message or "ゴミ箱の内容を確認できないため、削除を開始できません。" }}</div>
+    {% else %}
+      <p class="form-help">ゴミ箱内の削除済み作品{{ trash["items"]|length }}件をすべて完全に削除します。<br>この操作は元に戻せません。</p>
+      {% if trash.invalid_count %}
+        <div class="notice warning-panel">復元できない項目が{{ trash.invalid_count }}件あります。これらは完全削除の対象に含めません。</div>
+      {% endif %}
+      {% if capacity %}
+        <dl class="meta-grid">
+          <div>
+            <dt>主なデータ容量（概算）</dt>
+            <dd>{{ capacity.size_label }}</dd>
+          </div>
+          <div>
+            <dt>集計対象ファイル数</dt>
+            <dd>{{ capacity.file_count }}件</dd>
+          </div>
+          <div>
+            <dt>計算日時</dt>
+            <dd>{{ capacity.calculated_at_label }}</dd>
+          </div>
+        </dl>
+      {% endif %}
+    {% endif %}
+
+    <div class="form-actions">
+      {% if trash.status == "success" and trash["items"] %}
+        <form method="post" action="{{ url_for('empty_trash_route') }}" data-busy-message="削除済み作品を完全に削除しています。しばらくお待ちください。">
+          <input type="hidden" name="snapshot" value="{{ trash.snapshot }}">
+          <button class="button action-button danger-button" type="submit">完全に削除する</button>
+        </form>
+      {% endif %}
+      <a class="button cancel-button" href="{{ url_for('trash_index') }}">削除しない</a>
+    </div>
+  </section>
+{% endblock %}

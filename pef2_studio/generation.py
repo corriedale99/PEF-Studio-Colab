@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any
@@ -27,6 +28,7 @@ from pef2_engine.tts_settings import (
     effective_tts_settings_paths,
     resolve_tts_settings,
 )
+from pef2_engine.workspace_cleanup import cleanup_generation_artifacts
 from pef2_studio.generation_progress import (
     PROGRESS_DIRNAME,
     create_task_id,
@@ -71,6 +73,8 @@ _AI_DICTIONARY_TASKS_LOCK = Lock()
 _IMAGE_ALT_TASKS: dict[str, dict[str, Any]] = {}
 _IMAGE_ALT_TASKS_LOCK = Lock()
 
+LOGGER = logging.getLogger(__name__)
+
 
 def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
     work_dir = resolve_work_dir(workspace_root, work_id)
@@ -96,6 +100,7 @@ def run_tts_generation(workspace_root: Path, work_id: str) -> dict | None:
             return _exception_result("tts", work_dir, error)
     finally:
         release_generation_lock(work_dir, lock_result.get("lock"))
+        _cleanup_finished_generation_artifacts(work_dir, "audio")
 
     return _tts_generation_result(workspace_root, work_dir, report)
 
@@ -598,6 +603,7 @@ def _run_tts_generation_task(
     finally:
         if not lock_released:
             release_generation_lock(work_dir, lock_data if isinstance(lock_data, dict) else None)
+        _cleanup_finished_generation_artifacts(work_dir, "audio")
         _unregister_tts_task(task_id)
 
 
@@ -1045,6 +1051,19 @@ def _generation_result_from_progress(work_dir: Path, result: dict) -> dict:
     }
 
 
+def _cleanup_finished_generation_artifacts(work_dir: Path, *categories: str) -> None:
+    lock_result = acquire_generation_lock(work_dir, "cleanup")
+    if not lock_result.get("ok"):
+        return
+    try:
+        for category in categories:
+            cleanup_result = cleanup_generation_artifacts(work_dir, category)
+            for cleanup_error in cleanup_result.get("errors", []):
+                LOGGER.warning("generation artifact cleanup failed: %s", cleanup_error)
+    finally:
+        release_generation_lock(work_dir, lock_result.get("lock"))
+
+
 def _next_action_status(result: dict) -> str:
     if result.get("ok"):
         return "completed"
@@ -1161,6 +1180,7 @@ def run_epub_generation(workspace_root: Path, work_id: str, *, allow_missing_ima
             return _exception_result("epub", work_dir, error)
     finally:
         release_generation_lock(work_dir, lock_result.get("lock"))
+        _cleanup_finished_generation_artifacts(work_dir, "audio", "epub")
 
     report_path = work_dir / "epub" / EPUB_BUILD_REPORT_FILENAME
     if _epub_completed(work_dir, report, report_path):

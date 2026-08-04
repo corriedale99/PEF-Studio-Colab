@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from pef2_engine.workspace_cleanup import prune_terminal_progress
 
 
 PROGRESS_DIRNAME = ".progress"
@@ -15,6 +18,8 @@ DEFAULT_PROGRESS_ROOT = Path("/tmp/pef2_progress")
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "abandoned"}
 TASK_ID_PATTERN = re.compile(r"^(?P<operation>[a-z][a-z0-9_]*)_[0-9a-f]{32}$")
 JST = timezone(timedelta(hours=9))
+
+LOGGER = logging.getLogger(__name__)
 
 
 def create_task_id(operation: str) -> str:
@@ -106,6 +111,9 @@ def write_progress(work_dir: Path, progress: dict) -> dict:
                 active_path.unlink()
             except FileNotFoundError:
                 pass
+        cleanup_result = prune_terminal_progress(work_dir, keep_per_operation=1)
+        for cleanup_error in cleanup_result.get("errors", []):
+            LOGGER.warning("terminal progress cleanup failed: %s", cleanup_error)
     return progress
 
 
