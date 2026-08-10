@@ -16,6 +16,7 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
+from pef2_engine.image_processing import process_image_for_output
 from pef2_engine.image_paths import normalize_image_reference
 
 
@@ -24,6 +25,11 @@ LOGGER = logging.getLogger(__name__)
 THUMBNAIL_SPEC_VERSION = "thumbnail-v1"
 THUMBNAIL_MAX_EDGE = 160
 THUMBNAIL_JPEG_QUALITY = 75
+IMAGE_PREVIEW_SPEC_VERSION = "image-preview-v1"
+IMAGE_PREVIEW_MAX_EDGE = 800
+IMAGE_PREVIEW_JPEG_QUALITY = 85
+IMAGE_PREVIEW_PNG_COMPRESS_LEVEL = 6
+IMAGE_PREVIEW_REDUCING_GAP = 2.0
 THUMBNAIL_CACHE_DIRNAME = "pef2-thumbnail-cache"
 THUMBNAIL_PLACEHOLDER_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYGBgAAAABQABeqhXUAAAAABJRU5ErkJggg=="
@@ -62,6 +68,28 @@ class ThumbnailCandidate:
     path: Path
     cache_key: str
     output_format: str
+
+
+@dataclass(frozen=True)
+class ImagePreviewSourceMetadata:
+    cache_key: str
+    source_stored_filename: str
+    source_size: int
+    source_mtime_ns: int
+    image_file: str
+    spec_version: str
+    max_edge: int
+    output_format: str
+    jpeg_quality: int
+
+
+@dataclass(frozen=True)
+class ImagePreviewCacheEntry:
+    path: Path
+    metadata_path: Path
+    metadata: dict[str, Any]
+    etag: str
+    cache_hit: bool
 
 
 class ThumbnailSourceChangedError(RuntimeError):
@@ -130,6 +158,76 @@ def get_or_create_thumbnail(
             except Exception:
                 LOGGER.exception(
                     "Thumbnail generation failed for cache key %s",
+                    source_metadata.cache_key,
+                )
+                raise
+
+
+def get_or_create_image_preview(
+    workspace_root: Path,
+    work_id: str,
+    image_file: str,
+    source_path: Path,
+) -> ImagePreviewCacheEntry:
+    source = Path(source_path)
+    source_metadata = _image_preview_source_metadata(
+        workspace_root,
+        work_id,
+        image_file,
+        source,
+    )
+    preview_path, metadata_path = _cache_paths(
+        workspace_root,
+        work_id,
+        source_metadata.cache_key,
+        source_metadata.output_format,
+    )
+
+    cached = _valid_image_preview_cache_entry(
+        preview_path,
+        metadata_path,
+        source_metadata,
+    )
+    if cached is not None:
+        return cached
+
+    with _image_lock(source_metadata.cache_key):
+        source_metadata = _image_preview_source_metadata(
+            workspace_root,
+            work_id,
+            image_file,
+            source,
+        )
+        preview_path, metadata_path = _cache_paths(
+            workspace_root,
+            work_id,
+            source_metadata.cache_key,
+            source_metadata.output_format,
+        )
+        cached = _valid_image_preview_cache_entry(
+            preview_path,
+            metadata_path,
+            source_metadata,
+        )
+        if cached is not None:
+            return cached
+        with _GENERATION_SEMAPHORE:
+            source_metadata = _image_preview_source_metadata(
+                workspace_root,
+                work_id,
+                image_file,
+                source,
+            )
+            try:
+                return _generate_image_preview_cache_entry(
+                    source,
+                    preview_path,
+                    metadata_path,
+                    source_metadata,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Image preview generation failed for cache key %s",
                     source_metadata.cache_key,
                 )
                 raise
@@ -278,6 +376,36 @@ def _source_metadata(
     )
 
 
+def _image_preview_source_metadata(
+    workspace_root: Path,
+    work_id: str,
+    image_file: str,
+    source_path: Path,
+) -> ImagePreviewSourceMetadata:
+    normalized_image_file = normalize_image_reference(image_file)
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    stat = source_path.stat()
+    output_format = _output_format(normalized_image_file)
+    payload = {
+        "workspace_root": _normalized_workspace_root(workspace_root),
+        "work_id": unicodedata.normalize("NFC", str(work_id)),
+        "image_file": normalized_image_file,
+        "spec_version": IMAGE_PREVIEW_SPEC_VERSION,
+    }
+    return ImagePreviewSourceMetadata(
+        cache_key=_json_sha256(payload),
+        source_stored_filename=source_path.name,
+        source_size=stat.st_size,
+        source_mtime_ns=stat.st_mtime_ns,
+        image_file=normalized_image_file,
+        spec_version=IMAGE_PREVIEW_SPEC_VERSION,
+        max_edge=IMAGE_PREVIEW_MAX_EDGE,
+        output_format=output_format,
+        jpeg_quality=IMAGE_PREVIEW_JPEG_QUALITY,
+    )
+
+
 def _cache_paths(
     workspace_root: Path,
     work_id: str,
@@ -328,6 +456,39 @@ def _valid_cache_entry(
     )
 
 
+def _valid_image_preview_cache_entry(
+    preview_path: Path,
+    metadata_path: Path,
+    source_metadata: ImagePreviewSourceMetadata,
+) -> ImagePreviewCacheEntry | None:
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        expected_source = asdict(source_metadata)
+        if metadata.get("source") != expected_source:
+            return None
+        if not preview_path.is_file():
+            return None
+        preview_bytes = preview_path.read_bytes()
+        if not preview_bytes:
+            return None
+        if metadata.get("preview_size") != len(preview_bytes):
+            return None
+        if metadata.get("preview_sha256") != hashlib.sha256(preview_bytes).hexdigest():
+            return None
+        etag = str(metadata.get("etag") or "")
+        if not etag or etag != _source_etag(expected_source):
+            return None
+    except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return ImagePreviewCacheEntry(
+        path=preview_path,
+        metadata_path=metadata_path,
+        metadata=metadata,
+        etag=etag,
+        cache_hit=True,
+    )
+
+
 def _generate_cache_entry(
     source_path: Path,
     thumbnail_path: Path,
@@ -361,6 +522,65 @@ def _generate_cache_entry(
         metadata_tmp = None
         return ThumbnailCacheEntry(
             path=thumbnail_path,
+            metadata_path=metadata_path,
+            metadata=metadata,
+            etag=metadata["etag"],
+            cache_hit=False,
+        )
+    finally:
+        for temporary in (image_tmp, metadata_tmp):
+            if temporary is None:
+                continue
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def _generate_image_preview_cache_entry(
+    source_path: Path,
+    preview_path: Path,
+    metadata_path: Path,
+    source_metadata: ImagePreviewSourceMetadata,
+) -> ImagePreviewCacheEntry:
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    image_tmp: Path | None = None
+    metadata_tmp: Path | None = None
+    try:
+        image_tmp = _temporary_path(preview_path.parent, preview_path.suffix)
+        process_image_for_output(
+            source_path,
+            image_tmp,
+            max_edge=IMAGE_PREVIEW_MAX_EDGE,
+            jpeg_quality=IMAGE_PREVIEW_JPEG_QUALITY,
+            resample=Image.Resampling.BICUBIC,
+            reducing_gap=IMAGE_PREVIEW_REDUCING_GAP,
+            png_compress_level=IMAGE_PREVIEW_PNG_COMPRESS_LEVEL,
+            jpeg_optimize=False,
+            allow_original_if_not_smaller=False,
+            copy_small_metadata_free_png=False,
+        )
+        if not _image_preview_source_still_matches(source_path, source_metadata):
+            raise ThumbnailSourceChangedError("source image changed during preview generation")
+        preview_bytes = image_tmp.read_bytes()
+        source_data = asdict(source_metadata)
+        metadata = {
+            "source": source_data,
+            "preview_size": len(preview_bytes),
+            "preview_sha256": hashlib.sha256(preview_bytes).hexdigest(),
+            "etag": _source_etag(source_data),
+        }
+        metadata_tmp = _temporary_path(metadata_path.parent, ".json")
+        metadata_tmp.write_text(
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(image_tmp, preview_path)
+        image_tmp = None
+        os.replace(metadata_tmp, metadata_path)
+        metadata_tmp = None
+        return ImagePreviewCacheEntry(
+            path=preview_path,
             metadata_path=metadata_path,
             metadata=metadata,
             etag=metadata["etag"],
@@ -460,6 +680,21 @@ def _output_format(image_file: str) -> str:
 
 
 def _source_still_matches(source_path: Path, source_metadata: ThumbnailSourceMetadata) -> bool:
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return False
+    return (
+        source_path.name == source_metadata.source_stored_filename
+        and stat.st_size == source_metadata.source_size
+        and stat.st_mtime_ns == source_metadata.source_mtime_ns
+    )
+
+
+def _image_preview_source_still_matches(
+    source_path: Path,
+    source_metadata: ImagePreviewSourceMetadata,
+) -> bool:
     try:
         stat = source_path.stat()
     except OSError:

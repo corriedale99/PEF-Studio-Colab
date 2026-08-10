@@ -216,7 +216,7 @@
               <div>
                 <div class="preview-frame">
                   {% if selected.image_exists %}
-                    <img src="{{ url_for('work_image_file', work_id=page.work_id, segment_index=selected.segment_index) }}" alt="画像プレビュー">
+                    <img src="{{ url_for('work_image_preview', work_id=page.work_id, segment_index=selected.segment_index) }}" alt="画像プレビュー">
                   {% else %}
                     <div class="missing-preview">画像ファイルが見つかりません。</div>
                   {% endif %}

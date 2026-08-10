@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from pef2_engine import workspace_paths
 from pef2_engine.image_alt_review import image_dimensions
 from pef2_engine.image_paths import (
@@ -21,6 +23,11 @@ from pef2_engine.image_paths import (
     image_filename,
     resolve_existing_image,
     validate_image_reference,
+)
+from pef2_engine.image_processing import (
+    ProcessedImage,
+    process_image_for_output,
+    source_is_safe_for_raw_copy,
 )
 from pef2_engine.io_utils import read_json, write_json
 from pef2_engine.workspace_cleanup import prune_timestamped_backup_files
@@ -40,6 +47,10 @@ IMAGE_MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
 }
+EPUB_IMAGE_MAX_EDGE = 1600
+EPUB_IMAGE_JPEG_QUALITY = 85
+EPUB_IMAGE_PNG_COMPRESS_LEVEL = 6
+EPUB_IMAGE_REDUCING_GAP = 3.0
 CONTROL_ALLOWED = {0x09, 0x0A, 0x0D}
 
 LOGGER = logging.getLogger(__name__)
@@ -187,6 +198,8 @@ def _build_epub_tmp(tmp_dir: Path, context: dict, output_name: str, report: dict
     if context["images"]:
         images_dir.mkdir(parents=True, exist_ok=True)
 
+    _prepare_epub_images(context, images_dir, report)
+
     (tmp_dir / "mimetype").write_text(MIMETYPE_CONTENT, encoding="ascii")
     (meta_inf_dir / "container.xml").write_text(_container_xml(), encoding="utf-8")
     (oebps_dir / "text.xhtml").write_text(_text_xhtml(context), encoding="utf-8")
@@ -194,14 +207,181 @@ def _build_epub_tmp(tmp_dir: Path, context: dict, output_name: str, report: dict
     (oebps_dir / "smil.smil").write_text(_smil_xml(context), encoding="utf-8")
     (oebps_dir / "content.opf").write_text(_content_opf(context), encoding="utf-8")
     shutil.copy2(context["audio_path"], audio_dir / AUDIO_FILENAME)
-    for image in context["images"]:
-        shutil.copy2(image["source"], images_dir / image["filename"])
 
     _write_epub_zip(
         tmp_dir,
         tmp_dir / output_name,
         {_image_zip_arcname(image["href"]) for image in context["images"]},
     )
+
+
+def _prepare_epub_images(context: dict, images_dir: Path, report: dict) -> None:
+    prepared_images: list[dict] = []
+    for image in context["images"]:
+        source = Path(image["source"])
+        output = images_dir / image["filename"]
+        source_size = _safe_file_size(source)
+        try:
+            result = process_image_for_output(
+                source,
+                output,
+                max_edge=EPUB_IMAGE_MAX_EDGE,
+                jpeg_quality=EPUB_IMAGE_JPEG_QUALITY,
+                resample=Image.Resampling.LANCZOS,
+                reducing_gap=EPUB_IMAGE_REDUCING_GAP,
+                png_compress_level=EPUB_IMAGE_PNG_COMPRESS_LEVEL,
+                jpeg_optimize=True,
+                allow_original_if_not_smaller=True,
+                copy_small_metadata_free_png=True,
+            )
+            _record_image_optimization(report, image, result, fallback=False)
+            prepared_images.append(image)
+            continue
+        except Exception as error:
+            LOGGER.warning("EPUB image optimization failed for %s: %s", source, error)
+            _remove_partial_epub_image(output)
+
+        fallback_result = _safe_epub_image_fallback(source, output)
+        if fallback_result is not None:
+            report["warnings"].append(
+                _warning(
+                    "image_optimization_failed_fallback",
+                    "image optimization failed; a safe fallback image was used",
+                    image=image["href"],
+                )
+            )
+            _record_image_optimization(report, image, fallback_result, fallback=True)
+            prepared_images.append(image)
+            continue
+
+        report["warnings"].append(
+            _warning(
+                "image_optimization_failed_omitted",
+                "image optimization failed and the original could not be copied safely; fallback text was inserted",
+                image=image["href"],
+            )
+        )
+        _record_omitted_image(report, image, source_size)
+        _mark_epub_image_unavailable(context, image)
+        _remove_partial_epub_image(output)
+
+    context["images"] = prepared_images
+
+
+def _safe_epub_image_fallback(source: Path, output: Path) -> ProcessedImage | None:
+    try:
+        return process_image_for_output(
+            source,
+            output,
+            max_edge=None,
+            jpeg_quality=EPUB_IMAGE_JPEG_QUALITY,
+            resample=Image.Resampling.LANCZOS,
+            reducing_gap=None,
+            png_compress_level=EPUB_IMAGE_PNG_COMPRESS_LEVEL,
+            jpeg_optimize=False,
+            allow_original_if_not_smaller=False,
+            copy_small_metadata_free_png=False,
+        )
+    except Exception as error:
+        LOGGER.warning("EPUB image sanitizing fallback failed for %s: %s", source, error)
+        _remove_partial_epub_image(output)
+    if not source_is_safe_for_raw_copy(source):
+        return None
+    try:
+        shutil.copy2(source, output)
+        source_size = source.stat().st_size
+        return ProcessedImage(
+            source_size=source_size,
+            output_size=output.stat().st_size,
+            optimized=False,
+            original_used=True,
+            resized=False,
+            metadata_removed=False,
+        )
+    except OSError as error:
+        LOGGER.warning("EPUB image raw fallback failed for %s: %s", source, error)
+        return None
+
+
+def _record_image_optimization(
+    report: dict,
+    image: dict,
+    result: ProcessedImage,
+    *,
+    fallback: bool,
+) -> None:
+    record = {
+        "image": image["href"],
+        "source_size_bytes": result.source_size,
+        "epub_size_bytes": result.output_size,
+        "optimized": result.optimized,
+        "original_used": result.original_used,
+        "fallback": fallback,
+        "resized": result.resized,
+        "metadata_removed": result.metadata_removed,
+        "omitted": False,
+    }
+    _append_image_optimization_record(report, record)
+
+
+def _record_omitted_image(report: dict, image: dict, source_size: int) -> None:
+    _append_image_optimization_record(
+        report,
+        {
+            "image": image["href"],
+            "source_size_bytes": source_size,
+            "epub_size_bytes": 0,
+            "optimized": False,
+            "original_used": False,
+            "fallback": True,
+            "resized": False,
+            "metadata_removed": False,
+            "omitted": True,
+        },
+    )
+
+
+def _append_image_optimization_record(report: dict, record: dict) -> None:
+    summary = report["image_optimization"]
+    summary["items"].append(record)
+    summary["source_size_bytes_total"] += int(record["source_size_bytes"])
+    summary["epub_size_bytes_total"] += int(record["epub_size_bytes"])
+    summary["saved_size_bytes_total"] = max(
+        0,
+        summary["source_size_bytes_total"] - summary["epub_size_bytes_total"],
+    )
+
+
+def _mark_epub_image_unavailable(context: dict, target: dict) -> None:
+    target_source = Path(target["source"]).resolve(strict=False)
+    for segment in context["epub_segments"]:
+        image = segment.get("image")
+        if not image or image.get("missing") or image.get("source") is None:
+            continue
+        if Path(image["source"]).resolve(strict=False) != target_source:
+            continue
+        replacement = _missing_image_item(
+            image.get("href") or image.get("filename") or "",
+            context["work_dir"] / "images",
+            int(segment["index"]),
+            filename=image.get("filename"),
+        )
+        replacement["alt"] = image.get("alt", "")
+        segment["image"] = replacement
+
+
+def _safe_file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _remove_partial_epub_image(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        LOGGER.warning("Could not remove partial EPUB image %s: %s", path, error)
 
 
 def _postbuild(epub_path: Path, context: dict, report: dict) -> None:
@@ -1108,6 +1288,12 @@ def _new_report(work_dir: Path) -> dict:
         "segments": 0,
         "sync_map_count": 0,
         "images": [],
+        "image_optimization": {
+            "items": [],
+            "source_size_bytes_total": 0,
+            "epub_size_bytes_total": 0,
+            "saved_size_bytes_total": 0,
+        },
         "duration_seconds": 0.0,
         "checks": {
             "preflight": False,

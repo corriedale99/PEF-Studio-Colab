@@ -89,6 +89,7 @@ from pef2_engine.thumbnail_cache import (
     cleanup_current_thumbnail_cache,
     cleanup_stale_thumbnail_caches,
     cleanup_work_thumbnail_cache,
+    get_or_create_image_preview,
     get_or_create_thumbnail,
 )
 from pef2_studio.generation import (
@@ -759,6 +760,47 @@ def create_app(workspace_root: Path | None = None):
         suffix = image_path.suffix.lower()
         mimetype = "image/png" if suffix == ".png" else "image/jpeg"
         return send_file(image_path, mimetype=mimetype)
+
+    @app.get("/works/<work_id>/images/<segment_index>/preview")
+    def work_image_preview(work_id: str, segment_index: str):
+        source = resolve_work_image_source(
+            resolved_workspace_root, work_id, segment_index
+        )
+        if source is None:
+            abort(404)
+        source_path = Path(source["path"])
+        suffix = source_path.suffix.lower()
+        mimetype = "image/png" if suffix == ".png" else "image/jpeg"
+        try:
+            entry = get_or_create_image_preview(
+                resolved_workspace_root,
+                work_id,
+                str(source["image_file"]),
+                source_path,
+            )
+        except Exception:
+            app.logger.exception(
+                "Image preview response used the original image after cache failure"
+            )
+            response = send_file(source_path, mimetype=mimetype)
+            response.headers["Cache-Control"] = "private, no-cache"
+            return response
+
+        if request.if_none_match.contains(entry.etag):
+            response = app.response_class(status=304)
+            response.headers["Cache-Control"] = "private, no-cache"
+            response.set_etag(entry.etag)
+            return response
+
+        response = send_file(
+            entry.path,
+            mimetype=mimetype,
+            conditional=False,
+            etag=False,
+        )
+        response.headers["Cache-Control"] = "private, no-cache"
+        response.set_etag(entry.etag)
+        return response
 
     @app.get("/works/<work_id>/images/<segment_index>/thumbnail")
     def work_image_thumbnail(work_id: str, segment_index: str):

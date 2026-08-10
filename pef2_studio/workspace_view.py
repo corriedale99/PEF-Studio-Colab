@@ -1076,12 +1076,13 @@ def _image_alt_length_target_label(value: int) -> str:
 
 
 def _selected_image_alt_item(items: list[dict], selected_segment_index: str | None) -> dict | None:
-    if selected_segment_index:
-        target = str(selected_segment_index)
-        for item in items:
-            if _image_index_text(item.get("segment_index")) == target:
-                return item
-    return items[0] if items else None
+    if selected_segment_index is None:
+        return None
+    target = str(selected_segment_index)
+    for item in items:
+        if _image_index_text(item.get("segment_index")) == target:
+            return item
+    return None
 
 
 def _image_index_text(value: Any) -> str:
