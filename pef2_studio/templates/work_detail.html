@@ -484,6 +484,24 @@
           <span class="status-pill status-pending" data-epub-status-pill>未完了</span>
         {% endif %}
       </div>
+      {% if work.latest_epub_missing_images["count"] > 0 %}
+        <div class="card-message card-message--warning">
+          <p>最新のEPUBには、読み込めなかった画像があります。</p>
+          <p>画像を確認してから、EPUBを再生成してください。</p>
+          <p>読み込めなかった画像：{{ work.latest_epub_missing_images["count"] }}件</p>
+          <details>
+            <summary>▶︎ 画像名を確認</summary>
+            <ul class="result-list">
+              {% for image in work.latest_epub_missing_images["items"] %}
+                <li>{{ image.image_file }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+          <div class="generation-actions">
+            <a class="button" href="{{ url_for('work_images', work_id=work.work_id) }}">画像を確認する</a>
+          </div>
+        </div>
+      {% endif %}
       {% if work.can_generate %}
         {% if work.can_download_epub %}
           <p>EPUBは作成済みです。</p>

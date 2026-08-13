@@ -23,6 +23,14 @@
     <p class="edit-help">・AI生成対象にした画像は、alt生成時にAIへ送信されます。個人情報が含まれる画像は対象外にしてください。</p>
   </section>
 
+  {% if page.image_summary["missing_count"] > 0 %}
+    <section class="panel warning-panel">
+      <h2>未読み込みの画像があります</h2>
+      <p>画像が読み込まれていない箇所：{{ page.image_summary["missing_count"] }}箇所</p>
+      <p>画像を読み込んでください。</p>
+    </section>
+  {% endif %}
+
   {% if page.result and (not page.result.bulk or not (review.ok and review.items)) %}
     <section class="panel {% if page.result.status == 'success' %}success-panel{% else %}warning-panel{% endif %}">
       <p>{{ page.result.message }}</p>
@@ -55,14 +63,14 @@
           <p class="form-help">
             新規 {{ page.result.summary["new"] }}件／上書き {{ page.result.summary.overwritten }}件／スキップ {{ page.result.summary.skipped }}件／未使用 {{ page.result.summary.unused }}件／エラー {{ page.result.summary.errors }}件
           </p>
-          {% if page.result.summary.missing %}<p class="form-help">未読み込み {{ page.result.summary.missing }}件</p>{% endif %}
+          {% if page.result.summary.missing %}<p class="form-help">未読み込みの画像ファイル：{{ page.result.summary.missing }}件</p>{% endif %}
           {% set bulk_result_groups = [
             ("new", "新規保存"),
             ("overwritten", "上書き"),
             ("skipped", "スキップ"),
             ("unused", "未使用"),
             ("errors", "エラー"),
-            ("missing", "未読み込み")
+            ("missing", "未読み込みの画像ファイル")
           ] %}
           {% for key, label in bulk_result_groups %}
             {% if page.result.details[key] %}

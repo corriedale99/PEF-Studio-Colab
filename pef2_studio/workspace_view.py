@@ -346,6 +346,7 @@ def load_work_detail(
         segment_errors=segment_errors,
     )
     image_summary = build_work_image_summary(work_dir)
+    latest_epub_missing_images = build_latest_epub_missing_image_warning(work_dir)
     pagination = paginate_segments(all_segments, page=page, per_page=per_page)
     dictionary_review_info = _dictionary_review_debug_info(work_dir)
     gemini_review_debug = _gemini_review_debug_info(work_dir)
@@ -440,6 +441,7 @@ def load_work_detail(
             workspace_root, work_dir
         ),
         "image_summary": image_summary,
+        "latest_epub_missing_images": latest_epub_missing_images,
         "can_enter_audio_edit": selected["mode"] in {"processed", "draft"},
         "segments": pagination["segments"],
         "segment_total": len(all_segments),
@@ -984,6 +986,31 @@ def build_work_image_summary(work_dir: Path) -> dict:
         "epub_needs_regeneration": _image_epub_needs_regeneration(work_dir, items),
         "errors": errors,
     }
+
+
+def build_latest_epub_missing_image_warning(work_dir: Path) -> dict:
+    if _latest_official_epub(work_dir) is None:
+        return {"count": 0, "items": []}
+
+    report = _read_optional_dict(work_dir / "epub" / "epub_build_report.json")
+    if report.get("ok") is not True or report.get("committed") is not True:
+        return {"count": 0, "items": []}
+
+    warnings = report.get("warnings")
+    if not isinstance(warnings, list):
+        return {"count": 0, "items": []}
+
+    items: list[dict] = []
+    for warning in warnings:
+        if not isinstance(warning, dict) or warning.get("code") != "missing_images":
+            continue
+        image_file = str(warning.get("image_file") or "").strip()
+        if not image_file:
+            image_file = "画像名不明"
+        elif Path(image_file).is_absolute() or re.match(r"^(?:[A-Za-z]:[\\/]|[\\]{2})", image_file):
+            image_file = Path(image_file.replace("\\", "/")).name or "画像名不明"
+        items.append({"image_file": image_file})
+    return {"count": len(items), "items": items}
 
 
 def build_work_image_alt_review_view(
