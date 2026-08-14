@@ -490,15 +490,19 @@
           <p>画像を確認してから、EPUBを再生成してください。</p>
           <p>読み込めなかった画像：{{ work.latest_epub_missing_images["count"] }}件</p>
           <details>
-            <summary>▶︎ 画像名を確認</summary>
+            <summary>画像名を確認</summary>
             <ul class="result-list">
               {% for image in work.latest_epub_missing_images["items"] %}
                 <li>{{ image.image_file }}</li>
               {% endfor %}
             </ul>
           </details>
+          <p class="action-note">音声が最新の場合は再利用し、必要な場合のみ音声を生成します。</p>
           <div class="generation-actions">
             <a class="button" href="{{ url_for('work_images', work_id=work.work_id) }}">画像を確認する</a>
+            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-cancel-url-template="{{ url_for('cancel_tts_generation', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
+              <button class="button action-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>EPUBを再生成する</button>
+            </form>
           </div>
         </div>
       {% endif %}
@@ -518,10 +522,12 @@
           {% if work.has_epub %}
             <a class="primary-button download-button" href="{{ url_for('download_epub', work_id=work.work_id) }}">ダウンロード</a>
           {% endif %}
-          {% if not work.can_download_epub or work.epub_needs_regeneration %}
-            <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-cancel-url-template="{{ url_for('cancel_tts_generation', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
-              <button class="button action-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>EPUB生成</button>
-            </form>
+          {% if work.latest_epub_missing_images["count"] == 0 %}
+            {% if not work.can_download_epub or work.epub_needs_regeneration %}
+              <form class="inline-form generation-submit-form" method="post" action="{{ url_for('generate_epub', work_id=work.work_id) }}" data-busy-message="処理中です。しばらくお待ちください。"{% if work.audio_needs_regeneration %} data-tts-start-url="{{ url_for('start_tts_generation', work_id=work.work_id) }}" data-tts-progress-url-template="{{ url_for('tts_generation_progress', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-cancel-url-template="{{ url_for('cancel_tts_generation', work_id=work.work_id, task_id='__TASK_ID__') }}" data-tts-mode="before-submit" data-tts-next-action="epub"{% endif %}>
+                <button class="button action-button" type="submit" {% if generation_locked %}data-generation-disabled-by-lock disabled{% endif %}>EPUB生成</button>
+              </form>
+            {% endif %}
           {% endif %}
         </div>
         <div class="generation-wait" data-generation-wait hidden>
